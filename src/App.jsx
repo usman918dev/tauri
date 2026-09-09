@@ -8,6 +8,7 @@ import Navbar from './Navbar'
 import { ImportedSlideEditor } from './ImportedSlideEditor'
 import { SlideCanvas } from './components/SlideCanvas'
 import { PairCard } from './components/PairCard'
+import { ReportHeader } from './components/ReportHeader'
 import { ROUTES, normalizeRoute } from './config/routes'
 import { TEMPLATES, getTemplateForPath } from './config/templates'
 import {
@@ -91,14 +92,51 @@ function App({ data }) {
   const [isGlobalTabsHydrated, setIsGlobalTabsHydrated] = useState(false)
 
   useEffect(() => {
+    const handleGlobalDragOver = (e) => {
+      e.preventDefault()
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'copy'
+      }
+    }
+    const handleGlobalDrop = (e) => {
+      e.preventDefault()
+    }
+    window.addEventListener('dragover', handleGlobalDragOver, false)
+    window.addEventListener('drop', handleGlobalDrop, false)
+    return () => {
+      window.removeEventListener('dragover', handleGlobalDragOver, false)
+      window.removeEventListener('drop', handleGlobalDrop, false)
+    }
+  }, [])
+
+  useEffect(() => {
     const hydrate = async () => {
       try {
         const saved = await loadPptxEditorState()
         if (saved && saved.tabs && saved.tabs.length > 0) {
-          // Keep home tab as the first one always
-          const savedDocs = saved.tabs.filter(t => t.id !== 'home').map(t => ({ ...t, type: 'document' }))
-          setTabs([{ id: 'home', type: 'home', title: 'Home' }, ...savedDocs])
-          setActiveTabId(saved.activeTabId || 'home')
+          const restoredTabs = saved.tabs
+            .filter(t => t && t.id !== 'home' && (t.title || t.filename))
+            .map(t => ({
+              id: t.id,
+              type: t.type || (t.fileBuffer ? 'document' : 'tool'),
+              toolId: t.toolId || t.id,
+              title: t.title || t.filename || 'Tool',
+              route: t.route || '/',
+              presetId: t.presetId || null,
+              designerMode: t.designerMode || (t.presetId ? 'use' : 'design'),
+              file: t.file || null,
+              nativeFilePath: t.nativeFilePath || null,
+              fileBuffer: t.fileBuffer || null,
+              parsedData: t.parsedData || null,
+              activeSlideIndex: t.activeSlideIndex || 0,
+              viewMode: t.viewMode || 'quick',
+            }))
+          if (restoredTabs.length > 0) {
+            setTabs([{ id: 'home', type: 'home', title: 'Home' }, ...restoredTabs])
+            if (saved.activeTabId && (saved.activeTabId === 'home' || restoredTabs.some(t => t.id === saved.activeTabId))) {
+              setActiveTabId(saved.activeTabId)
+            }
+          }
         }
       } catch (err) {
         console.warn('Failed to restore PPTX Editor state:', err)
@@ -114,24 +152,71 @@ function App({ data }) {
     import('./utils/storage').then(({ savePptxEditorState }) => {
       savePptxEditorState({
         activeTabId,
-        tabs: tabs.filter(t => t.id !== 'home')
+        tabs: tabs.filter(t => t && t.id !== 'home' && (t.title || t.filename)).map(t => ({
+          id: t.id,
+          type: t.type,
+          toolId: t.toolId,
+          title: t.title || t.filename,
+          route: t.route,
+          presetId: t.presetId,
+          designerMode: t.designerMode,
+          filename: t.filename || t.file?.name,
+          nativeFilePath: t.nativeFilePath || t.file?.nativeFilePath || null,
+          fileBuffer: t.fileBuffer,
+          parsedData: t.parsedData,
+          activeSlideIndex: t.activeSlideIndex,
+          viewMode: t.viewMode,
+        }))
       })
     })
   }, [tabs, activeTabId, isGlobalTabsHydrated])
 
   const openToolTab = (tool) => {
+    if (tool.toolId === 'master' || tool.id === 'master-designer' || tool.presetId) {
+      const presetIdToMatch = tool.presetId || activePresetId
+      const existing = tabs.find(t => t.type === 'tool' && t.presetId === presetIdToMatch)
+      if (existing) {
+        if (tool.designerMode) {
+          setTabs(prev => prev.map(t => t.id === existing.id ? { ...t, designerMode: tool.designerMode } : t))
+        }
+        setActiveTabId(existing.id)
+        return
+      }
+      const presetObj = masterPresets.find(p => p.id === tool.presetId)
+      const tabTitle = presetObj ? presetObj.name : (tool.name || tool.title || 'Master Creator')
+      const newTab = {
+        id: `tab_master_${tool.presetId || Date.now()}`,
+        type: 'tool',
+        toolId: 'master',
+        title: tabTitle,
+        route: ROUTES.master,
+        presetId: tool.presetId || activePresetId,
+        designerMode: tool.designerMode || (tool.presetId ? 'use' : 'design'),
+      }
+      setTabs(prev => [...prev, newTab])
+      setActiveTabId(newTab.id)
+      return
+    }
+
     const existing = tabs.find(t => t.type === 'tool' && t.toolId === tool.id)
     if (existing) {
       setActiveTabId(existing.id)
       return
     }
-    const newTab = { id: `tab_${Date.now()}`, type: 'tool', toolId: tool.id, title: tool.name, route: tool.route }
+    const newTab = { id: `tab_${Date.now()}`, type: 'tool', toolId: tool.id, title: tool.name || tool.title, route: tool.route }
     setTabs(prev => [...prev, newTab])
     setActiveTabId(newTab.id)
   }
 
-  const openDocumentTab = (file) => {
-    const newTab = { id: `doc_${Date.now()}`, type: 'document', title: file.name, file }
+  const openDocumentTab = (file, nativePath = null) => {
+    const filePath = nativePath || file?.nativeFilePath || null
+    const newTab = {
+      id: `doc_${Date.now()}`,
+      type: 'document',
+      title: file.name,
+      file,
+      nativeFilePath: filePath
+    }
     setTabs(prev => [...prev, newTab])
     setActiveTabId(newTab.id)
   }
@@ -154,10 +239,35 @@ function App({ data }) {
   // ── Preset management state ─────────────────────────────────────────────
   const [masterPresets, setMasterPresets] = useState([])
   const [activePresetId, setActivePresetId] = useState(null)
-  // Derive customLayout from active preset
-  const customLayout = masterPresets.find((p) => p.id === activePresetId)?.layout || null
-
   const [designerMode, setDesignerMode] = useState('design')
+
+  // Derive presetId and designerMode per active tab (fallback to global)
+  const effectivePresetId = activeTab?.presetId || activePresetId
+  const effectiveDesignerMode = activeTab?.designerMode || designerMode
+
+  const setEffectiveDesignerMode = (mode) => {
+    setDesignerMode(mode)
+    if (activeTabId && activeTabId !== 'home') {
+      setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, designerMode: mode } : t))
+    }
+  }
+
+  const setEffectivePresetId = async (presetId) => {
+    setActivePresetId(presetId)
+    await saveActivePresetId(presetId)
+    if (activeTabId && activeTabId !== 'home') {
+      const preset = masterPresets.find(p => p.id === presetId)
+      const presetName = preset ? preset.name : 'Master Creator'
+      setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, presetId, title: presetName } : t))
+    }
+    const first = await loadPairsFromDb(`pptxpro:custom-first-slide-data:${presetId}`)
+    const last = await loadPairsFromDb(`pptxpro:custom-last-slide-data:${presetId}`)
+    setFirstSlideData(first || {})
+    setLastSlideData(last || {})
+  }
+
+  // Derive customLayout from effective preset
+  const customLayout = masterPresets.find((p) => p.id === effectivePresetId)?.layout || null
   const [firstSlideData, setFirstSlideData] = useState({})
   const [lastSlideData, setLastSlideData] = useState({})
   const [isHydrated, setIsHydrated] = useState(false)
@@ -437,7 +547,7 @@ function App({ data }) {
         firstSlideUrl: customLayout?.firstSlideUrl || '',
         secondSlideUrl: '',
         lastSlideUrl: customLayout?.lastSlideUrl || '',
-        fileNamePrefix: masterPresets.find((p) => p.id === activePresetId)?.name || 'Custom_Report',
+        fileNamePrefix: masterPresets.find((p) => p.id === effectivePresetId)?.name || 'Custom_Report',
         masterTitle: 'CUSTOM_MASTER',
         slideTitle: 'Custom Report',
         themeLabel: 'Custom template slide background',
@@ -470,8 +580,8 @@ function App({ data }) {
         themeLabel: '',
       }
     }
-    return getTemplateForPath(window.location.pathname)
-  }, [currentRoute, customLayout, masterPresets, activePresetId])
+    return getTemplateForPath(currentRoute)
+  }, [currentRoute, customLayout, masterPresets, effectivePresetId])
 
   const [dailyVariant, setDailyVariant] = useState('urban')
   const slotKeys = useMemo(() => {
@@ -547,6 +657,10 @@ function App({ data }) {
     let cancelled = false
     const hydrate = async () => {
       const storedPairs = await loadStoredPairs(storageKey)
+      const storedFirst = await loadPairsFromDb(`${storageKey}:imported-first`)
+      const storedLast = await loadPairsFromDb(`${storageKey}:imported-last`)
+      const storedConfig = await loadPairsFromDb(`${storageKey}:imported-config`)
+
       const source = resolvePairsSource({
         storedPairs,
         data,
@@ -559,6 +673,31 @@ function App({ data }) {
         return
       }
       setPairs(normalizePairs(source, { slotKeys, requiresText, textDefault }))
+
+      if (storedFirst) {
+        setImportedFirstSlide(storedFirst)
+        importedFirstSlideRef.current = storedFirst
+      } else {
+        setImportedFirstSlide(null)
+        importedFirstSlideRef.current = null
+      }
+
+      if (storedLast) {
+        setImportedLastSlide(storedLast)
+        importedLastSlideRef.current = storedLast
+      } else {
+        setImportedLastSlide(null)
+        importedLastSlideRef.current = null
+      }
+
+      if (storedConfig) {
+        setUseTemplateFirst(!!storedConfig.useTemplateFirst)
+        setUseTemplateLast(!!storedConfig.useTemplateLast)
+      } else {
+        setUseTemplateFirst(false)
+        setUseTemplateLast(false)
+      }
+
       hydrationRef.current = { key: storageKey, skipSave: true }
       setIsHydrated(true)
     }
@@ -764,12 +903,19 @@ function App({ data }) {
             setImportedFirstSlide(firstSlide)
             importedFirstSlideRef.current = firstSlide
             setUseTemplateFirst(false)
+            await savePairsToDb(`${storageKey}:imported-first`, firstSlide)
+          } else {
+            await removePairsFromDb(`${storageKey}:imported-first`)
           }
           if (lastSlide) {
             setImportedLastSlide(lastSlide)
             importedLastSlideRef.current = lastSlide
             setUseTemplateLast(false)
+            await savePairsToDb(`${storageKey}:imported-last`, lastSlide)
+          } else {
+            await removePairsFromDb(`${storageKey}:imported-last`)
           }
+          await savePairsToDb(`${storageKey}:imported-config`, { useTemplateFirst: false, useTemplateLast: false })
         } catch (err) {
           console.warn('Could not extract first/last slide elements:', err)
         }
@@ -818,6 +964,9 @@ function App({ data }) {
         window.localStorage.removeItem(storageKey)
       }
       await removePairsFromDb(storageKey)
+      await removePairsFromDb(`${storageKey}:imported-first`)
+      await removePairsFromDb(`${storageKey}:imported-last`)
+      await removePairsFromDb(`${storageKey}:imported-config`)
     } finally {
       setPairs(normalizePairs([], { slotKeys, requiresText, textDefault }))
       setImportedFirstSlide(null)
@@ -832,11 +981,23 @@ function App({ data }) {
     }
   }
 
-  const handleUseTemplateFirst = () => setUseTemplateFirst(true)
-  const handleUseImportedFirst = () => setUseTemplateFirst(false)
+  const handleUseTemplateFirst = async () => {
+    setUseTemplateFirst(true)
+    await savePairsToDb(`${storageKey}:imported-config`, { useTemplateFirst: true, useTemplateLast })
+  }
+  const handleUseImportedFirst = async () => {
+    setUseTemplateFirst(false)
+    await savePairsToDb(`${storageKey}:imported-config`, { useTemplateFirst: false, useTemplateLast })
+  }
 
-  const handleUseTemplateLast = () => setUseTemplateLast(true)
-  const handleUseImportedLast = () => setUseTemplateLast(false)
+  const handleUseTemplateLast = async () => {
+    setUseTemplateLast(true)
+    await savePairsToDb(`${storageKey}:imported-config`, { useTemplateFirst, useTemplateLast: true })
+  }
+  const handleUseImportedLast = async () => {
+    setUseTemplateLast(false)
+    await savePairsToDb(`${storageKey}:imported-config`, { useTemplateFirst, useTemplateLast: false })
+  }
 
   const buildReportOptions = (overrides = {}) => {
     const resolvedFirstSlideUrl =
@@ -1090,32 +1251,110 @@ function App({ data }) {
   }
 
   // --- EXTRACTED TAURI HANDLERS ---
-  const handleMinimize = () => { if (window.__TAURI_INTERNALS__) getCurrentWindow().minimize() }
-  const handleMaximize = () => { if (window.__TAURI_INTERNALS__) getCurrentWindow().toggleMaximize() }
-  const handleClose = () => { if (window.__TAURI_INTERNALS__) getCurrentWindow().close() }
+  const isTauriEnv = () => typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)
+
+  const handleMinimize = async () => {
+    if (isTauriEnv()) {
+      try {
+        await getCurrentWindow().minimize()
+      } catch (err) {
+        console.error('Failed to minimize window:', err)
+      }
+    }
+  }
+
+  const handleMaximize = async () => {
+    if (isTauriEnv()) {
+      try {
+        await getCurrentWindow().toggleMaximize()
+      } catch (err) {
+        console.error('Failed to toggle maximize window:', err)
+      }
+    }
+  }
+
+  const handleClose = async () => {
+    if (isTauriEnv()) {
+      try {
+        await getCurrentWindow().close()
+      } catch (err) {
+        console.error('Failed to close window:', err)
+      }
+    }
+  }
+
+  const handleTitlebarMouseDown = (e) => {
+    if (e.buttons === 1 && isTauriEnv()) {
+      const target = e.target
+      if (target.hasAttribute('data-tauri-drag-region') || target.parentElement?.hasAttribute('data-tauri-drag-region')) {
+        try {
+          getCurrentWindow().startDragging()
+        } catch (err) {
+          console.error('Start dragging failed:', err)
+        }
+      }
+    }
+  }
 
   // --- FIXED MAIN RENDER ---
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', overflow: 'hidden' }}>
       {/* TAURI TITLEBAR */}
-      {window.__TAURI_INTERNALS__ && (
-        <div data-tauri-drag-region style={{
-          height: '32px',
-          background: 'var(--surface)',
-          display: 'flex',
-          justifyContent: 'flex-end',
-          alignItems: 'center',
-          userSelect: 'none',
-          paddingRight: '8px'
-        }}>
-          <div data-tauri-drag-region style={{ flex: 1, paddingLeft: '16px', fontSize: '12px', fontWeight: 600, color: 'var(--muted-foreground)' }}>PPTXPro</div>
-          <button type="button" onClick={handleMinimize} style={{ width: '32px', height: '32px', background: 'transparent', border: 'none', color: 'var(--foreground)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {isTauriEnv() && (
+        <div
+          data-tauri-drag-region
+          onMouseDown={handleTitlebarMouseDown}
+          style={{
+            height: '34px',
+            background: 'var(--surface)',
+            display: 'flex',
+            justifyContent: 'flex-end',
+            alignItems: 'center',
+            userSelect: 'none',
+            paddingRight: '8px',
+            borderBottom: '1px solid var(--border)',
+            cursor: 'default'
+          }}
+        >
+          <div
+            data-tauri-drag-region
+            style={{
+              flex: 1,
+              paddingLeft: '16px',
+              fontSize: '12px',
+              fontWeight: 600,
+              color: 'var(--muted-foreground)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}
+          >
+            <span>📊 PPTXPro Desktop</span>
+          </div>
+          <button
+            type="button"
+            onClick={handleMinimize}
+            title="Minimize"
+            style={{ width: '36px', height: '34px', background: 'transparent', border: 'none', color: 'var(--foreground)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
             <svg width="12" height="12" viewBox="0 0 12 12"><rect fill="currentColor" width="10" height="1" x="1" y="6"></rect></svg>
           </button>
-          <button type="button" onClick={handleMaximize} style={{ width: '32px', height: '32px', background: 'transparent', border: 'none', color: 'var(--foreground)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <button
+            type="button"
+            onClick={handleMaximize}
+            title="Maximize"
+            style={{ width: '36px', height: '34px', background: 'transparent', border: 'none', color: 'var(--foreground)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
             <svg width="12" height="12" viewBox="0 0 12 12"><rect width="9" height="9" x="1.5" y="1.5" fill="none" stroke="currentColor"></rect></svg>
           </button>
-          <button type="button" onClick={handleClose} style={{ width: '32px', height: '32px', background: 'transparent', border: 'none', color: 'var(--foreground)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onMouseOver={e => e.currentTarget.style.color = 'red'} onMouseOut={e => e.currentTarget.style.color = 'var(--foreground)'}>
+          <button
+            type="button"
+            onClick={handleClose}
+            title="Close"
+            style={{ width: '36px', height: '34px', background: 'transparent', border: 'none', color: 'var(--foreground)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            onMouseOver={e => { e.currentTarget.style.backgroundColor = '#ef4444'; e.currentTarget.style.color = '#ffffff'; }}
+            onMouseOut={e => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--foreground)'; }}
+          >
             <svg width="12" height="12" viewBox="0 0 12 12"><path fill="currentColor" d="M1.2 1.2l9.6 9.6M10.8 1.2L1.2 10.8" stroke="currentColor" strokeWidth="1.2"></path></svg>
           </button>
         </div>
@@ -1168,7 +1407,7 @@ function App({ data }) {
         {tabs.map(tab => (
           <div key={tab.id} style={{ display: tab.id === activeTabId ? 'block' : 'none', height: '100%' }}>
             {tab.type === 'home' ? (
-              <HomeTab onOpenTool={openToolTab} />
+              <HomeTab onOpenTool={openToolTab} masterPresets={masterPresets} />
             ) : tab.type === 'document' ? (
               <Suspense fallback={<p>Loading...</p>}>
                 <PptxEditor
@@ -1190,83 +1429,35 @@ function App({ data }) {
               >
 
                 {currentRoute !== ROUTES.pptxEditor && (
-                  <header className="app__header">
-                    <div>
-                      <p className="app__eyebrow">{template.eyebrow}</p>
-                      <h1>{template.title}</h1>
-                      <p className="app__subtext">{template.subtext}</p>
-                    </div>
-                    <div className="app__actions">
-                      {!(currentRoute === ROUTES.master && designerMode === 'design') &&
-                        currentRoute !== ROUTES.extract &&
-                        currentRoute !== ROUTES.collage &&
-                        currentRoute !== ROUTES.merge &&
-                        currentRoute !== ROUTES.pdf &&
-                        currentRoute !== ROUTES.mergePdf &&
-                        currentRoute !== ROUTES.gpsPdf &&
-                        currentRoute !== ROUTES.pptxToPdf &&
-                        currentRoute !== ROUTES.pptxEditor && (
-                          <>
-                            <div className="app__badge">Slides ready: {slideCount}</div>
-                            <button
-                              type="button"
-                              className="button button--secondary"
-                              onClick={handlePptxButtonClick}
-                              disabled={isImporting}
-                            >
-                              {isImporting ? 'Importing...' : 'Upload PPTX'}
-                            </button>
-                            <button type="button" className="ghost" onClick={handleClearStored}>
-                              Clear Saved
-                            </button>
-                            <input
-                              ref={pptxInputRef}
-                              className="file-input"
-                              type="file"
-                              accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                              onChange={handlePptxUpload}
-                            />
-                            <button
-                              type="button"
-                              className="button button--completed"
-                              onClick={handleDownloadCompleted}
-                              disabled={!canDownloadCompleted}
-                              title={`Export only the ${slideCount} complete slide(s) as PPTX`}
-                            >
-                              {isGeneratingCompleted ? 'Building...' : `✅ Completed (${slideCount})`}
-                            </button>
-                            <button
-                              type="button"
-                              className="button button--zip"
-                              onClick={handleExportRemainingPics}
-                              disabled={!canExportZip}
-                              title={`Export images from ${incompletePairsForZip.length} incomplete slide(s) as ZIP`}
-                            >
-                              {isExportingZip ? 'Zipping...' : `📦 Remaining Pics (${incompletePairsForZip.length})`}
-                            </button>
-                            <button
-                              type="button"
-                              className="button"
-                              style={{ background: 'linear-gradient(135deg, #10b981, #059669)', borderColor: 'transparent', color: '#fff' }}
-                              onClick={() => handleSaveReportDirect(false)}
-                              disabled={!canDownload}
-                              title="Save report directly to file on disk without downloading separate copies"
-                            >
-                              {isGenerating ? 'Building...' : '💾 Save File'}
-                            </button>
-                            <button
-                              type="button"
-                              className="button"
-                              onClick={handleDownload}
-                              disabled={!canDownload}
-                              title="Download a separate copy file via browser"
-                            >
-                              {isGenerating ? 'Building PPTX...' : '⬇️ Download Report'}
-                            </button>
-                          </>
-                        )}
-                    </div>
-                  </header>
+                  <ReportHeader
+                    template={template}
+                    currentRoute={currentRoute}
+                    ROUTES={ROUTES}
+                    designerMode={effectiveDesignerMode}
+                    slideCount={slideCount}
+                    incompletePairCount={incompletePairsForZip.length}
+                    isImporting={isImporting}
+                    isGenerating={isGenerating}
+                    isGeneratingCompleted={isGeneratingCompleted}
+                    isExportingZip={isExportingZip}
+                    canDownload={canDownload}
+                    canDownloadCompleted={canDownloadCompleted}
+                    canExportZip={canExportZip}
+                    pptxInputRef={pptxInputRef}
+                    handlePptxButtonClick={handlePptxButtonClick}
+                    handlePptxUpload={handlePptxUpload}
+                    handleClearStored={handleClearStored}
+                    handleDownloadCompleted={handleDownloadCompleted}
+                    handleExportRemainingPics={handleExportRemainingPics}
+                    handleSaveReportDirect={handleSaveReportDirect}
+                    handleDownload={handleDownload}
+                    onSelectReport={(route) => {
+                      const targetTab = tabs.find(t => t.id === activeTabId)
+                      if (targetTab) {
+                        setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, route } : t))
+                      }
+                    }}
+                  />
                 )}
 
                 {importStatus.message && (
@@ -1285,7 +1476,14 @@ function App({ data }) {
                   </Suspense>
                 ) : currentRoute === ROUTES.pptxEditor ? (
                   <Suspense fallback={routeFallback}>
-                    <PptxEditor />
+                    <PptxEditor
+                      tabs={tabs}
+                      setTabs={setTabs}
+                      activeTabId={activeTabId}
+                      setActiveTabId={setActiveTabId}
+                      onCloseTab={closeTab}
+                      onOpenNew={(file) => openDocumentTab(file)}
+                    />
                   </Suspense>
                 ) : currentRoute === ROUTES.extract ? (
                   <Suspense fallback={routeFallback}>
@@ -1307,25 +1505,27 @@ function App({ data }) {
                   <Suspense fallback={routeFallback}>
                     <PdfMerger />
                   </Suspense>
-                ) : currentRoute === ROUTES.master && designerMode === 'design' ? (
+                ) : currentRoute === ROUTES.master && effectiveDesignerMode === 'design' ? (
                   <Suspense fallback={routeFallback}>
                     <MasterDesigner
                       customLayout={customLayout}
+                      designerMode={effectiveDesignerMode}
+                      setDesignerMode={setEffectiveDesignerMode}
                       onSave={async (layout) => {
-                        if (activePresetId) {
+                        if (effectivePresetId) {
                           const updated = masterPresets.map((p) =>
-                            p.id === activePresetId ? { ...p, layout } : p,
+                            p.id === effectivePresetId ? { ...p, layout } : p,
                           )
                           setMasterPresets(updated)
                           await saveMasterPresets(updated)
                           alert('Active preset updated! Switch to "Use Template" to use it.')
-                          setDesignerMode('use')
+                          setEffectiveDesignerMode('use')
                         } else {
                           await handleSaveNewPreset('Default', layout)
                         }
                       }}
                       presets={masterPresets}
-                      activePresetId={activePresetId}
+                      activePresetId={effectivePresetId}
                       onSavePreset={handleSaveNewPreset}
                       onLoadPreset={handleLoadPreset}
                       onDeletePreset={handleDeletePreset}
@@ -1337,6 +1537,45 @@ function App({ data }) {
                   </Suspense>
                 ) : (
                   <>
+                    {currentRoute === ROUTES.master && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '12px',
+                          padding: '12px 20px',
+                          background: 'var(--surface)',
+                          borderRadius: '12px',
+                          border: '1px solid var(--border)',
+                          marginBottom: '20px',
+                          flexWrap: 'wrap',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <span style={{ fontSize: '24px' }}>🎨</span>
+                          <div>
+                            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: 'var(--foreground)' }}>
+                              {masterPresets.find((p) => p.id === effectivePresetId)?.name || 'Custom Master Template'}
+                            </h3>
+                            <span style={{ fontSize: '12px', color: 'var(--muted-foreground)' }}>
+                              Mode: {effectiveDesignerMode === 'use' ? '🚀 Template Fill & Report Generation' : '✏️ Layout Designer'}
+                            </span>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '10px' }}>
+                          <button
+                            type="button"
+                            className="button button--secondary"
+                            style={{ padding: '8px 16px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                            onClick={() => setEffectiveDesignerMode('design')}
+                            title="Return to canvas editor to modify placeholders and layout"
+                          >
+                            ✏️ Edit / Redesign Layout
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     <section className="card card--theme">
                       <div>
                         <p className="label">{template.themeLabel}</p>
@@ -1366,10 +1605,11 @@ function App({ data }) {
                         <ImportedSlideEditor
                           title="First Slide (from imported PPTX)"
                           slideData={importedFirstSlide}
-                          templateUrl={customLayout?.firstSlideUrl}
                           onUseTemplate={handleUseTemplateFirst}
                           onChange={(data) => {
                             importedFirstSlideRef.current = data
+                            setImportedFirstSlide(data)
+                            savePairsToDb(`${storageKey}:imported-first`, data)
                           }}
                         />
                       ) : (
@@ -1473,10 +1713,11 @@ function App({ data }) {
                         <ImportedSlideEditor
                           title="Last Slide (from imported PPTX)"
                           slideData={importedLastSlide}
-                          templateUrl={customLayout?.lastSlideUrl}
                           onUseTemplate={handleUseTemplateLast}
                           onChange={(data) => {
                             importedLastSlideRef.current = data
+                            setImportedLastSlide(data)
+                            savePairsToDb(`${storageKey}:imported-last`, data)
                           }}
                         />
                       ) : (

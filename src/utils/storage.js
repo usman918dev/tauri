@@ -302,6 +302,12 @@ export const savePptxEditorState = async ({ activeTabId, tabs }) => {
   try {
     const serializedTabs = tabs.map((t) => ({
       id: t.id,
+      type: t.type,
+      toolId: t.toolId,
+      title: t.title || t.filename || t.file?.name,
+      route: t.route,
+      presetId: t.presetId,
+      designerMode: t.designerMode,
       filename: t.filename || t.file?.name,
       fileBuffer: t.fileBuffer,
       parsedData: t.parsedData,

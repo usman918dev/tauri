@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { extractDroppedImage } from '../utils/pairUtils'
 
 export function PlaceholderDropOverlay({ onImageBytesResolved, showToast }) {
   const [isDragOver, setIsDragOver] = useState(false)
@@ -7,6 +8,9 @@ export function PlaceholderDropOverlay({ onImageBytesResolved, showToast }) {
   const handleDragOver = (e) => {
     e.preventDefault()
     e.stopPropagation()
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'copy'
+    }
     if (!isDragOver) setIsDragOver(true)
   }
 
@@ -21,45 +25,46 @@ export function PlaceholderDropOverlay({ onImageBytesResolved, showToast }) {
     e.stopPropagation()
     setIsDragOver(false)
 
-    // 1. Check local dropped file
-    const droppedFile = e.dataTransfer.files?.[0]
-    if (droppedFile && droppedFile.type.startsWith('image/')) {
-      try {
-        const buffer = await droppedFile.arrayBuffer()
-        onImageBytesResolved(new Uint8Array(buffer), droppedFile.type)
-        return
-      } catch (err) {
-        console.error('Failed to read local dropped file:', err)
-        showToast('⚠️ Failed to read local image file.')
+    try {
+      const extracted = await extractDroppedImage(e)
+      if (!extracted) {
+        showToast('⚠️ Could not process dropped item. Please try dropping an image.')
         return
       }
-    }
 
-    // 2. Check web image drag URL
-    let imageUrl = e.dataTransfer.getData('text/uri-list')
-    if (!imageUrl) {
-      const htmlData = e.dataTransfer.getData('text/html')
-      if (htmlData) {
-        const match = htmlData.match(/src=["'](.*?)["']/i)
-        if (match && match[1]) imageUrl = match[1]
-      }
-    }
-
-    if (imageUrl) {
-      try {
-        const response = await fetch(imageUrl)
-        if (!response.ok) throw new Error(`HTTP error ${response.status}`)
-        const blob = await response.blob()
-        const buffer = await blob.arrayBuffer()
-        onImageBytesResolved(new Uint8Array(buffer), blob.type || 'image/png')
-        showToast('✓ Image dropped and imported successfully!')
-      } catch (err) {
-        console.warn('Web image fetch failed (generic CORS/network fallback):', err)
-        showToast("⚠️ Couldn't load that image directly — drop a local file instead")
-        if (fileInputRef.current) {
-          fileInputRef.current.click()
+      if (typeof extracted === 'string') {
+        if (extracted.startsWith('data:image/')) {
+          const b64 = extracted.replace(/^data:[^;]+;base64,/, '')
+          const mime = extracted.substring(extracted.indexOf(':') + 1, extracted.indexOf(';')) || 'image/png'
+          const binary = atob(b64)
+          const bytes = new Uint8Array(binary.length)
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+          onImageBytesResolved(bytes, mime)
+          showToast('✓ Image dropped and imported successfully!')
+          return
+        }
+        try {
+          const response = await fetch(extracted)
+          const blob = await response.blob()
+          const buffer = await blob.arrayBuffer()
+          onImageBytesResolved(new Uint8Array(buffer), blob.type || 'image/png')
+          showToast('✓ Image dropped and imported successfully!')
+          return
+        } catch (err) {
+          console.warn('Web image fetch failed:', err)
+          showToast("⚠️ Could not load remote image directly — select a local file instead.")
+          if (fileInputRef.current) fileInputRef.current.click()
+          return
         }
       }
+
+      // Extracted is a File or Blob
+      const buffer = await extracted.arrayBuffer()
+      onImageBytesResolved(new Uint8Array(buffer), extracted.type || 'image/png')
+      showToast('✓ Image dropped and imported successfully!')
+    } catch (err) {
+      console.error('Failed to process dropped image:', err)
+      showToast('⚠️ Failed to process dropped image.')
     }
   }
 

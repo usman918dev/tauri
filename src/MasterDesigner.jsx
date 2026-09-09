@@ -1,8 +1,226 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { parsePptxForEditing } from './report/pptxEditorUtils'
+
+// ─── Helper to extract elements from PPTX slide ──────────────────────────────
+function extractElementsFromSlide(slide, prefix) {
+  const placeholders = []
+  const textboxes = []
+
+  if (!slide || !Array.isArray(slide.elements)) {
+    return { placeholders, textboxes, backgroundUrl: slide?.backgroundDataUrl || '' }
+  }
+
+  slide.elements.forEach((elem, idx) => {
+    let x = parseFloat((elem.xInch ?? (elem.xPct ? (elem.xPct / 100) * 13.333 : 0.5)).toFixed(2))
+    let y = parseFloat((elem.yInch ?? (elem.yPct ? (elem.yPct / 100) * 7.5 : 0.5)).toFixed(2))
+    let w = parseFloat((elem.wInch ?? (elem.wPct ? (elem.wPct / 100) * 13.333 : 3.0)).toFixed(2))
+    let h = parseFloat((elem.hInch ?? (elem.hPct ? (elem.hPct / 100) * 7.5 : 1.0)).toFixed(2))
+
+    if (isNaN(x) || x < 0) x = 0.5
+    if (isNaN(y) || y < 0) y = 0.5
+    if (isNaN(w) || w <= 0.1) w = 3.0
+    if (isNaN(h) || h <= 0.1) h = 1.0
+
+    x = Math.min(x, 12.5)
+    y = Math.min(y, 7.0)
+    w = Math.min(w, 13.333 - x)
+    h = Math.min(h, 7.5 - y)
+
+    if (elem.type === 'image') {
+      placeholders.push({
+        id: `placeholder_${prefix}_${Date.now()}_${idx}`,
+        key: `${prefix}_image_${placeholders.length}`,
+        label: `Image Placeholder ${placeholders.length + 1}`,
+        x,
+        y,
+        w,
+        h,
+        borderRadius: 0,
+      })
+    } else if (elem.type === 'text') {
+      let ptSize = 14
+      if (elem.fontSizePct) {
+        ptSize = Math.round(elem.fontSizePct * 10)
+      }
+      if (elem.isTitle) ptSize = Math.max(ptSize, 22)
+
+      textboxes.push({
+        id: `textbox_${prefix}_${Date.now()}_${idx}`,
+        key: `${prefix}_text_${textboxes.length}`,
+        textDefault: elem.text || 'Extracted Text',
+        x,
+        y,
+        w,
+        h,
+        fontSize: ptSize || 16,
+        fontColor: elem.color || '111111',
+        fontFace: elem.fontFace || 'Calibri',
+        bold: !!elem.bold,
+        align: elem.align || 'center',
+        _extracted: true,
+      })
+    }
+  })
+
+  return {
+    placeholders,
+    textboxes,
+    backgroundUrl: slide.backgroundDataUrl || '',
+  }
+}
+
+// ─── Slide Selector Modal for Template Creation ──────────────────────────────
+function SlideSelectorModal({ isOpen, onClose, parsedPptx, onApply }) {
+  const slides = parsedPptx?.slides || []
+  const [firstIndex, setFirstIndex] = useState(0)
+  const [masterIndex, setMasterIndex] = useState(slides.length > 1 ? 1 : 0)
+  const [lastIndex, setLastIndex] = useState(slides.length > 2 ? slides.length - 1 : (slides.length > 1 ? 1 : 0))
+
+  useEffect(() => {
+    if (slides.length > 0) {
+      setFirstIndex(0)
+      setMasterIndex(slides.length > 1 ? 1 : 0)
+      setLastIndex(slides.length > 2 ? slides.length - 1 : (slides.length > 1 ? 1 : 0))
+    }
+  }, [parsedPptx])
+
+  if (!isOpen || !parsedPptx) return null
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 9999,
+      background: 'rgba(15, 23, 42, 0.75)', backdropFilter: 'blur(6px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px'
+    }}>
+      <div style={{
+        background: 'var(--surface, #ffffff)', borderRadius: '16px',
+        maxWidth: '920px', width: '100%', maxHeight: '90vh', display: 'flex',
+        flexDirection: 'column', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+        border: '1px solid var(--border, #e2e8f0)', overflow: 'hidden'
+      }}>
+        {/* Header */}
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--border, #e2e8f0)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: 'var(--foreground, #0f172a)' }}>
+              ✨ Assign Slide Roles from PPTX
+            </h3>
+            <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--muted-foreground, #64748b)' }}>
+              Uploaded: <strong>{parsedPptx.filename}</strong> ({slides.length} slides). Pick Cover (First), Body Layout (Master), and Outro (Last).
+            </p>
+          </div>
+          <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#94a3b8' }}>✕</button>
+        </div>
+
+        {/* Selected Summary Bar */}
+        <div style={{ padding: '12px 24px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '13px' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ padding: '3px 8px', background: '#e0e7ff', color: '#3730a3', fontWeight: 600, borderRadius: '6px', fontSize: '12px' }}>📌 First Slide:</span>
+            <strong>Slide {firstIndex + 1}</strong> ({slides[firstIndex]?.title || 'Untitled'})
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ padding: '3px 8px', background: '#f3e8ff', color: '#6b21a8', fontWeight: 600, borderRadius: '6px', fontSize: '12px' }}>🎨 Master Slide:</span>
+            <strong>Slide {masterIndex + 1}</strong> ({slides[masterIndex]?.title || 'Untitled'})
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ padding: '3px 8px', background: '#dcfce7', color: '#166534', fontWeight: 600, borderRadius: '6px', fontSize: '12px' }}>🏁 Last Slide:</span>
+            <strong>Slide {lastIndex + 1}</strong> ({slides[lastIndex]?.title || 'Untitled'})
+          </span>
+        </div>
+
+        {/* Slides Grid */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '24px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: '20px' }}>
+          {slides.map((s, idx) => {
+            const isFirst = firstIndex === idx
+            const isMaster = masterIndex === idx
+            const isLast = lastIndex === idx
+            const imgCount = s.elements?.filter(e => e.type === 'image').length || 0
+            const txtCount = s.elements?.filter(e => e.type === 'text').length || 0
+
+            return (
+              <div key={s.id || idx} style={{
+                background: '#ffffff', borderRadius: '12px', border: '2px solid',
+                borderColor: isFirst ? '#4f46e5' : isMaster ? '#9333ea' : isLast ? '#16a34a' : '#e2e8f0',
+                boxShadow: (isFirst || isMaster || isLast) ? '0 10px 15px -3px rgba(0,0,0,0.1)' : 'none',
+                overflow: 'hidden', display: 'flex', flexDirection: 'column', transition: 'all 0.15s ease'
+              }}>
+                {/* Slide Preview Thumbnail */}
+                <div style={{ height: '120px', background: s.backgroundDataUrl ? `url(${s.backgroundDataUrl}) center/cover` : '#f1f5f9', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {!s.backgroundDataUrl && <span style={{ fontSize: '32px', opacity: 0.5 }}>📊</span>}
+                  <span style={{ position: 'absolute', top: '8px', left: '8px', background: 'rgba(15,23,42,0.75)', color: '#fff', padding: '2px 8px', borderRadius: '999px', fontSize: '11px', fontWeight: 600 }}>
+                    Slide {idx + 1}
+                  </span>
+                </div>
+
+                {/* Info */}
+                <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px', flex: 1 }}>
+                  <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {s.title || `Slide ${idx + 1}`}
+                  </h4>
+                  <div style={{ fontSize: '11px', color: '#64748b', display: 'flex', gap: '8px' }}>
+                    <span>🖼️ {imgCount} image{imgCount !== 1 ? 's' : ''}</span>
+                    <span>📝 {txtCount} text box{txtCount !== 1 ? 'es' : ''}</span>
+                  </div>
+
+                  {/* Role Selection Buttons */}
+                  <div style={{ marginTop: 'auto', paddingTop: '8px', display: 'flex', gap: '4px', borderTop: '1px solid #f1f5f9' }}>
+                    <button
+                      type="button"
+                      onClick={() => setFirstIndex(idx)}
+                      style={{
+                        flex: 1, padding: '5px 2px', fontSize: '10px', fontWeight: 600, borderRadius: '6px', border: 'none', cursor: 'pointer',
+                        background: isFirst ? '#4f46e5' : '#f1f5f9', color: isFirst ? '#ffffff' : '#64748b'
+                      }}
+                    >
+                      📌 First
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMasterIndex(idx)}
+                      style={{
+                        flex: 1, padding: '5px 2px', fontSize: '10px', fontWeight: 600, borderRadius: '6px', border: 'none', cursor: 'pointer',
+                        background: isMaster ? '#9333ea' : '#f1f5f9', color: isMaster ? '#ffffff' : '#64748b'
+                      }}
+                    >
+                      🎨 Master
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLastIndex(idx)}
+                      style={{
+                        flex: 1, padding: '5px 2px', fontSize: '10px', fontWeight: 600, borderRadius: '6px', border: 'none', cursor: 'pointer',
+                        background: isLast ? '#16a34a' : '#f1f5f9', color: isLast ? '#ffffff' : '#64748b'
+                      }}
+                    >
+                      🏁 Last
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Footer Actions */}
+        <div style={{ padding: '16px 24px', borderTop: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+          <button type="button" onClick={onClose} style={{ padding: '8px 16px', borderRadius: '8px', border: '1px solid #cbd5e1', background: '#ffffff', color: '#334155', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onApply({ firstSlideIndex: firstIndex, masterSlideIndex: masterIndex, lastSlideIndex: lastIndex })}
+            style={{ padding: '8px 20px', borderRadius: '8px', border: 'none', background: 'linear-gradient(135deg, #7c3aed, #4f46e5)', color: '#ffffff', fontWeight: 600, fontSize: '13px', cursor: 'pointer', boxShadow: '0 4px 6px -1px rgba(124, 58, 237, 0.3)' }}
+          >
+            🚀 Build Template Layout
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // ─── Preset Library Panel ────────────────────────────────────────────────────
 
-function PresetLibrary({ presets, activePresetId, onLoad, onDelete, onRename, onSaveNew, onExportPreset, onExportAll, onImportPresets }) {
+function PresetLibrary({ presets, activePresetId, onLoad, onDelete, onRename, onSaveNew, onExportPreset, onExportAll, onImportPresets, onUseTemplate, onUploadPptxTemplate }) {
   const [newName, setNewName] = useState('')
   const [renamingId, setRenamingId] = useState(null)
   const [renameValue, setRenameValue] = useState('')
@@ -58,8 +276,19 @@ function PresetLibrary({ presets, activePresetId, onLoad, onDelete, onRename, on
         </div>
       </div>
 
-      {/* ── Export All / Import row ── */}
+      {/* ── Export All / Import / Create PPTX Template row ── */}
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border)' }}>
+        {onUploadPptxTemplate && (
+          <button
+            type="button"
+            className="button"
+            style={{ padding: '6px 14px', fontSize: '11px', background: 'linear-gradient(135deg, #0284c7, #2563eb)', borderColor: 'transparent', color: '#fff', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '5px' }}
+            onClick={onUploadPptxTemplate}
+            title="Upload a PPTX presentation to extract First, Master, and Last slide layouts"
+          >
+            📁 Create Template from PPTX
+          </button>
+        )}
         <button
           type="button"
           className="ghost"
@@ -150,6 +379,20 @@ function PresetLibrary({ presets, activePresetId, onLoad, onDelete, onRename, on
                     >
                       {isActive ? '✓ Loaded' : 'Load'}
                     </button>
+                    {onUseTemplate && (
+                      <button
+                        type="button"
+                        className="button"
+                        style={{ padding: '4px 10px', fontSize: '10px', background: 'linear-gradient(135deg, #7c3aed, #6d28d9)', borderColor: 'transparent', color: '#fff' }}
+                        onClick={() => {
+                          if (!isActive) onLoad(preset.id)
+                          onUseTemplate()
+                        }}
+                        title="Use this template layout to build reports"
+                      >
+                        🚀 Use Template
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="ghost"
@@ -211,6 +454,8 @@ export function MasterDesigner({
   onExportPreset,
   onExportAll,
   onImportPresets,
+  designerMode = 'design',
+  setDesignerMode,
 }) {
   const [firstSlideUrl, setFirstSlideUrl] = useState(customLayout?.firstSlideUrl || '')
   const [lastSlideUrl, setLastSlideUrl] = useState(customLayout?.lastSlideUrl || '')
@@ -233,6 +478,60 @@ export function MasterDesigner({
   const [extractMode, setExtractMode] = useState(false)
   const [drawState, setDrawState] = useState(null) // { startXPct, startYPct }
   const [drawRect, setDrawRect] = useState(null)   // { xPct, yPct, wPct, hPct }
+
+  // Create Template from PPTX State
+  const pptxTemplateInputRef = useRef(null)
+  const [isParsingPptx, setIsParsingPptx] = useState(false)
+  const [parsedPptxData, setParsedPptxData] = useState(null)
+  const [isSlideModalOpen, setIsSlideModalOpen] = useState(false)
+
+  const handlePptxTemplateUpload = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setIsParsingPptx(true)
+    try {
+      const parsed = await parsePptxForEditing(file)
+      if (!parsed || !parsed.slides || parsed.slides.length === 0) {
+        alert('Could not extract slides from the uploaded presentation.')
+        return
+      }
+      setParsedPptxData(parsed)
+      setIsSlideModalOpen(true)
+    } catch (err) {
+      console.error('PPTX template parse error:', err)
+      alert('Failed to parse PPTX template file: ' + (err.message || 'Unknown error'))
+    } finally {
+      setIsParsingPptx(false)
+    }
+  }
+
+  const handleApplySlideRoles = ({ firstSlideIndex, masterSlideIndex, lastSlideIndex }) => {
+    if (!parsedPptxData || !parsedPptxData.slides) return
+
+    const firstSlideObj = parsedPptxData.slides[firstSlideIndex]
+    const masterSlideObj = parsedPptxData.slides[masterSlideIndex]
+    const lastSlideObj = parsedPptxData.slides[lastSlideIndex]
+
+    const firstRes = extractElementsFromSlide(firstSlideObj, 'first')
+    const masterRes = extractElementsFromSlide(masterSlideObj, 'master')
+    const lastRes = extractElementsFromSlide(lastSlideObj, 'last')
+
+    setFirstSlidePlaceholders(firstRes.placeholders)
+    setFirstSlideTextboxes(firstRes.textboxes)
+    setFirstSlideUrl(firstRes.backgroundUrl || '')
+
+    setPlaceholders(masterRes.placeholders)
+    setTextboxes(masterRes.textboxes)
+    setMasterBgUrl(masterRes.backgroundUrl || '')
+
+    setLastSlidePlaceholders(lastRes.placeholders)
+    setLastSlideTextboxes(lastRes.textboxes)
+    setLastSlideUrl(lastRes.backgroundUrl || '')
+
+    setIsSlideModalOpen(false)
+    alert(`✅ PPTX elements preserved & populated onto canvas!\n\n• Cover Slide: ${firstRes.placeholders.length} img, ${firstRes.textboxes.length} txt\n• Master Slide: ${masterRes.placeholders.length} img, ${masterRes.textboxes.length} txt\n• Outro Slide: ${lastRes.placeholders.length} img, ${lastRes.textboxes.length} txt\n\nYou can now edit, resize, style, or add more elements!`)
+  }
 
   const canvasRef = useRef(null)
 
@@ -506,6 +805,10 @@ export function MasterDesigner({
         onExportPreset={onExportPreset}
         onExportAll={onExportAll}
         onImportPresets={onImportPresets}
+        onUseTemplate={() => {
+          if (setDesignerMode) setDesignerMode('use')
+        }}
+        onUploadPptxTemplate={() => pptxTemplateInputRef.current?.click()}
         onSaveNew={(name) => {
           // Collect current canvas layout and save as new preset
           const sortAndMapPlaceholders = (list, prefix) =>
@@ -536,6 +839,33 @@ export function MasterDesigner({
           </p>
         </div>
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+          {/* PPTX Template Upload Button */}
+          <button
+            type="button"
+            className="button"
+            style={{
+              background: 'linear-gradient(135deg, #0284c7, #2563eb)',
+              borderColor: 'transparent',
+              color: '#fff',
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}
+            onClick={() => pptxTemplateInputRef.current?.click()}
+            disabled={isParsingPptx}
+            title="Upload a PPTX presentation (3+ slides) to extract First, Master, and Last slide layouts"
+          >
+            {isParsingPptx ? '⏳ Parsing PPTX...' : '📁 Create Template from PPTX'}
+          </button>
+          <input
+            ref={pptxTemplateInputRef}
+            type="file"
+            accept=".pptx"
+            style={{ display: 'none' }}
+            onChange={handlePptxTemplateUpload}
+          />
+
           {/* Extract mode toggle */}
           <button
             type="button"
@@ -564,6 +894,25 @@ export function MasterDesigner({
           <button type="button" className="button" onClick={handleSave}>
             Save Layout
           </button>
+          {setDesignerMode && (
+            <button
+              type="button"
+              className="button"
+              style={{
+                background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
+                borderColor: 'transparent',
+                color: '#fff',
+                fontWeight: 600,
+              }}
+              onClick={() => {
+                handleSave()
+                setDesignerMode('use')
+              }}
+              title="Save current layout and switch to filling out report slides"
+            >
+              🚀 Use Template
+            </button>
+          )}
         </div>
       </div>
 
@@ -972,6 +1321,14 @@ export function MasterDesigner({
           )}
         </div>
       </div>
+
+      {/* ── Slide Role Selection Modal for PPTX Import ── */}
+      <SlideSelectorModal
+        isOpen={isSlideModalOpen}
+        onClose={() => setIsSlideModalOpen(false)}
+        parsedPptx={parsedPptxData}
+        onApply={handleApplySlideRoles}
+      />
     </div>
   )
 }

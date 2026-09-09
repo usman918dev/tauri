@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { readFileAsDataUrl } from '../utils/pairUtils'
+import { readFileAsDataUrl, getDroppedImageAsDataUrl } from '../utils/pairUtils'
 
 const UNDO_DURATION_MS = 5000
 
@@ -70,21 +70,33 @@ export function DropSlot({ label, value, onChange, className = '', urlMode = 'in
     onChange(dataUrl)
   }
 
-  const handleDrop = (event) => {
+  const handleDrop = async (event) => {
     event.preventDefault()
+    event.stopPropagation()
     setIsDragging(false)
-    const file = event.dataTransfer.files?.[0]
-    if (file) {
-      handleFile(file)
+
+    const dataUrl = await getDroppedImageAsDataUrl(event)
+    if (dataUrl) {
+      clearUndoTimer()
+      setPendingDelete(null)
+      onChange(dataUrl)
     }
   }
 
   const handleDragOver = (event) => {
     event.preventDefault()
+    event.stopPropagation()
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'copy'
+    }
   }
 
   const handleDragEnter = (event) => {
     event.preventDefault()
+    event.stopPropagation()
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'copy'
+    }
     setIsDragging(true)
   }
 

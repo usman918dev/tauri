@@ -192,6 +192,9 @@ export function QuickEditView({
                       onDragOver={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
+                        if (e.dataTransfer) {
+                          e.dataTransfer.dropEffect = 'copy'
+                        }
                         setDragOverElemId(elem.id)
                       }}
                       onDragLeave={() => setDragOverElemId(null)}

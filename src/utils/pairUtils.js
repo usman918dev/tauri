@@ -16,6 +16,90 @@ export const readFileAsDataUrl = (file) =>
     reader.readAsDataURL(file)
   })
 
+export const extractDroppedImage = async (event) => {
+  if (!event || !event.dataTransfer) return null
+  const dt = event.dataTransfer
+
+  // 1. Files array (local OS drop, file explorer, WhatsApp desktop attachment)
+  if (dt.files && dt.files.length > 0) {
+    for (let i = 0; i < dt.files.length; i++) {
+      const file = dt.files[i]
+      if (file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|bmp|jfif|tiff?)$/i.test(file.name)) {
+        return file
+      }
+    }
+    if (dt.files[0] && (dt.files[0].size > 0 || dt.files[0].type)) {
+      return dt.files[0]
+    }
+  }
+
+  // 2. DataTransfer items (WhatsApp Web, browser dragged image elements, clipboard items)
+  if (dt.items && dt.items.length > 0) {
+    for (let i = 0; i < dt.items.length; i++) {
+      const item = dt.items[i]
+      if (item.kind === 'file' || (item.type && item.type.startsWith('image/'))) {
+        const file = item.getAsFile()
+        if (file) return file
+      }
+    }
+  }
+
+  // 3. URI list / URL / HTML (WhatsApp Web, web browser images, blob URLs)
+  const uriList = dt.getData('text/uri-list') || dt.getData('URL')
+  if (uriList) {
+    const urls = uriList.split(/[\r\n]+/).map((s) => s.trim()).filter(Boolean)
+    for (const url of urls) {
+      if (/^(https?|blob|data):/i.test(url)) {
+        return url
+      }
+    }
+  }
+
+  const html = dt.getData('text/html')
+  if (html) {
+    const match = html.match(/src=["']((?:https?|blob|data:image)[^"']+)["']/i) || html.match(/src=["']([^"']+)["']/i)
+    if (match && match[1]) {
+      return match[1]
+    }
+  }
+
+  const plainText = dt.getData('text/plain')
+  if (plainText) {
+    const trimmed = plainText.trim()
+    if (/^(https?|blob|data):/i.test(trimmed)) {
+      return trimmed
+    }
+  }
+
+  return null
+}
+
+export const getDroppedImageAsDataUrl = async (event) => {
+  const result = await extractDroppedImage(event)
+  if (!result) return null
+
+  if (typeof result === 'string') {
+    if (result.startsWith('data:image/')) {
+      return result
+    }
+    try {
+      const response = await fetch(result, { mode: 'cors' })
+      const blob = await response.blob()
+      return await readFileAsDataUrl(blob)
+    } catch (err) {
+      console.warn('Could not fetch image URL directly, using raw URL fallback:', err)
+      return result
+    }
+  }
+
+  try {
+    return await readFileAsDataUrl(result)
+  } catch (err) {
+    console.error('Failed to read dropped file as Data URL:', err)
+    return null
+  }
+}
+
 export const hasPairContent = (pair, { slotKeys = [] } = {}) => {
   if (!pair) {
     return false

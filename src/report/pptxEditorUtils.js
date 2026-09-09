@@ -480,16 +480,6 @@ export const parsePptxForEditing = async (file) => {
     })
   }
 
-  // Propagate default master background image to inner slides if they don't specify their own
-  const defaultBg = slides.find((s) => Boolean(s.backgroundDataUrl))?.backgroundDataUrl || ''
-  if (defaultBg) {
-    slides.forEach((s) => {
-      if (!s.backgroundDataUrl) {
-        s.backgroundDataUrl = defaultBg
-      }
-    })
-  }
-
   return {
     filename: file.name,
     slides,

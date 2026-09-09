@@ -1,18 +1,19 @@
 import { useState, useEffect, useRef } from 'react'
 import { parsePptxForEditing, exportEditedPptx } from './report/pptxEditorUtils'
 import { loadPptxEditorState, savePptxEditorState, clearPptxEditorState } from './utils/storage'
+import { getDroppedImageAsDataUrl } from './utils/pairUtils'
 import { QuickEditView } from './QuickEditView'
 import { FullCanvasEditor } from './FullCanvasEditor'
 export function PptxWorkspace({ 
-  tabs, 
-  setTabs, 
-  activeTabId, 
-  setActiveTabId, 
-  onCloseTab, 
-  onOpenNew 
+  tabs = [], 
+  setTabs = () => {}, 
+  activeTabId = null, 
+  setActiveTabId = () => {}, 
+  onCloseTab = () => {}, 
+  onOpenNew = () => {} 
 }) {
 
-  const activeTab = tabs.find((t) => t.id === activeTabId) || null
+  const activeTab = (Array.isArray(tabs) ? tabs.find((t) => t.id === activeTabId) : null) || null
   const file = activeTab?.file || null
   const fileBuffer = activeTab?.fileBuffer || null
   const parsedData = activeTab?.parsedData || null
@@ -98,7 +99,7 @@ export function PptxWorkspace({
 
   // Hydration is now handled globally, but we still load files into memory
   useEffect(() => {
-    if (tabs.length === 0) return
+    if (!Array.isArray(tabs) || tabs.length === 0) return
     tabs.forEach(t => {
       if (t.fileBuffer && !fileBuffersRef.current[t.id]) {
         fileBuffersRef.current[t.id] = t.fileBuffer
@@ -109,7 +110,7 @@ export function PptxWorkspace({
   // Auto-parse new document tabs from App.jsx
   useEffect(() => {
     const parseNewTabs = async () => {
-      const unparsed = tabs.find(t => t.file && !t.fileBuffer && !t.isParsing)
+      const unparsed = Array.isArray(tabs) ? tabs.find(t => t.file && !t.fileBuffer && !t.isParsing) : null
       if (unparsed) {
         setTabs(prev => prev.map(t => t.id === unparsed.id ? { ...t, isParsing: true } : t))
         setLoading(true)
@@ -141,12 +142,37 @@ export function PptxWorkspace({
     parseNewTabs()
   }, [tabs, setTabs])
 
+  const isTauriEnv = () => typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)
+
   const handleFileUpload = async (uploadedFile, fileHandle = null) => {
     if (!uploadedFile) return
     onOpenNew(uploadedFile)
   }
 
   const handleNativeOpen = async () => {
+    if (isTauriEnv()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        const nativePath = await invoke('pick_open_file')
+        if (nativePath) {
+          setLoading(true)
+          const uint8Array = await invoke('read_binary_file', { path: nativePath })
+          const fileName = nativePath.split(/[/\\]/).pop() || 'Presentation.pptx'
+          const fileObj = new File([new Uint8Array(uint8Array)], fileName, {
+            type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          })
+          fileObj.nativeFilePath = nativePath
+          handleFileUpload(fileObj)
+        }
+      } catch (err) {
+        console.error('Tauri native open failed:', err)
+        setError('Failed to open native file: ' + err.message)
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+
     if (typeof window.showOpenFilePicker === 'function') {
       try {
         const [handle] = await window.showOpenFilePicker({
@@ -166,117 +192,6 @@ export function PptxWorkspace({
       }
     } else {
       document.getElementById('pptx-file-input-fallback')?.click()
-    }
-  }
-  const handleTabSwitch = async (targetId) => {
-    if (targetId === activeTabId) return
-    setLoading(true)
-    setError('')
-    try {
-      if (viewMode === 'canvas') {
-        if (fullCanvasRef.current && typeof fullCanvasRef.current.getContent === 'function') {
-          const contentBytes = await fullCanvasRef.current.getContent()
-          if (contentBytes && contentBytes.length > 0) {
-            const newBuffer = contentBytes.buffer.slice(
-              contentBytes.byteOffset,
-              contentBytes.byteOffset + contentBytes.byteLength
-            )
-            fileBuffersRef.current[activeTabId] = newBuffer
-            
-            const fileName = file?.name || parsedData?.filename || 'Presentation.pptx'
-            const reParsedData = await parsePptxForEditing(
-              new File([newBuffer], fileName, {
-                type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-              })
-            )
-            
-            setTabs(prev => prev.map(t => t.id === activeTabId ? {
-              ...t,
-              fileBuffer: newBuffer,
-              parsedData: reParsedData
-            } : t))
-          }
-        }
-      }
-      setActiveTabId(targetId)
-    } catch (err) {
-      console.error('Failed to sync before switching tabs:', err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleCloseTab = (idToClose) => {
-    setTabs(prev => {
-      const newTabs = prev.filter(t => t.id !== idToClose)
-      if (newTabs.length > 0 && idToClose === activeTabId) {
-        setActiveTabId(newTabs[0].id)
-      } else if (newTabs.length === 0) {
-        setActiveTabId(null)
-      }
-      return newTabs
-    })
-    delete fileBuffersRef.current[idToClose]
-    delete fileHandlesRef.current[idToClose]
-  }
-
-  // §3 Mode Switch Sync Checkpoint Rule
-  const handleModeChange = async (targetMode) => {
-    if (targetMode === viewMode) return
-    setLoading(true)
-    setError('')
-
-    try {
-      if (viewMode === 'canvas') {
-        // Leaving Full Editor -> serialize viewer content to shared fileBuffer
-        if (fullCanvasRef.current && typeof fullCanvasRef.current.getContent === 'function') {
-          const contentBytes = await fullCanvasRef.current.getContent()
-          if (contentBytes && contentBytes.length > 0) {
-            const newBuffer = contentBytes.buffer.slice(
-              contentBytes.byteOffset,
-              contentBytes.byteOffset + contentBytes.byteLength
-            )
-            fileBufferRef.current = newBuffer
-            setFileBuffer(newBuffer)
-
-            const fileName = file?.name || parsedData?.filename || 'Presentation.pptx'
-            const reParsedData = await parsePptxForEditing(
-              new File([newBuffer], fileName, {
-                type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-              })
-            )
-            setParsedData(reParsedData)
-          }
-        }
-      } else if (viewMode === 'quick') {
-        // Leaving Quick Edit -> flush tag mutations to shared fileBuffer
-        const exportFile =
-          file ||
-          (fileBufferRef.current
-            ? new File([fileBufferRef.current], parsedData?.filename || 'Presentation.pptx', {
-                type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-              })
-            : null)
-
-        if (exportFile && parsedData) {
-          const res = await exportEditedPptx(exportFile, parsedData.slides, {
-            download: false,
-            saveAs: false,
-          })
-          if (res?.blob) {
-            const newBuffer = await res.blob.arrayBuffer()
-            fileBufferRef.current = newBuffer
-            setFileBuffer(newBuffer)
-          }
-        }
-      }
-      setViewMode(targetMode)
-      showToast(`✓ Switched to ${targetMode === 'canvas' ? 'Full Visual Canvas Editor' : 'Quick Tag Editor'}`)
-    } catch (err) {
-      console.error('Failed to sync editor mode checkpoint:', err)
-      setError('Failed to sync presentation changes between editor modes.')
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -310,6 +225,32 @@ export function PptxWorkspace({
 
     setIsExporting(true)
     try {
+      if (isTauriEnv()) {
+        const { invoke } = await import('@tauri-apps/api/core')
+        let nativePath = activeTab?.nativeFilePath || file?.nativeFilePath
+
+        if (!nativePath) {
+          nativePath = await invoke('pick_save_file', {
+            suggestedName: exportFile.name || 'Presentation.pptx'
+          })
+        }
+
+        if (nativePath) {
+          const res = await exportEditedPptx(exportFile, parsedData.slides, { download: false, saveAs: false })
+          if (res?.blob) {
+            const buffer = await res.blob.arrayBuffer()
+            await invoke('write_binary_file', {
+              path: nativePath,
+              contents: Array.from(new Uint8Array(buffer)),
+            })
+            // Persist nativeFilePath on tab
+            setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, nativeFilePath: nativePath } : t))
+            showToast(`✓ Saved directly to "${nativePath}" on disk!`)
+          }
+        }
+        return
+      }
+
       const res = await exportEditedPptx(exportFile, parsedData.slides, {
         fileHandle: fileHandleRef.current,
         saveAs: false,
@@ -358,6 +299,26 @@ export function PptxWorkspace({
 
     setIsExporting(true)
     try {
+      if (isTauriEnv()) {
+        const { invoke } = await import('@tauri-apps/api/core')
+        const nativePath = await invoke('pick_save_file', {
+          suggestedName: exportFile.name || 'Presentation.pptx'
+        })
+        if (nativePath) {
+          const res = await exportEditedPptx(exportFile, parsedData.slides, { download: false, saveAs: false })
+          if (res?.blob) {
+            const buffer = await res.blob.arrayBuffer()
+            await invoke('write_binary_file', {
+              path: nativePath,
+              contents: Array.from(new Uint8Array(buffer)),
+            })
+            setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, nativeFilePath: nativePath } : t))
+            showToast(`✓ Saved to "${nativePath}" on disk!`)
+          }
+        }
+        return
+      }
+
       const res = await exportEditedPptx(exportFile, parsedData.slides, {
         saveAs: true,
         download: false,
@@ -374,6 +335,18 @@ export function PptxWorkspace({
       setIsExporting(false)
     }
   }
+
+  // Keyboard shortcut listener (Ctrl+S / Cmd+S) for 1-click direct file save
+  useEffect(() => {
+    const handleSaveShortcut = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        handleSaveDirect()
+      }
+    }
+    window.addEventListener('keydown', handleSaveShortcut)
+    return () => window.removeEventListener('keydown', handleSaveShortcut)
+  }, [activeTabId, viewMode, parsedData, file])
 
   const handleExport = async () => {
     const exportFile =
@@ -430,18 +403,15 @@ export function PptxWorkspace({
     })
   }
 
-  const handleElementImageDrop = (e, elemId) => {
+  const handleElementImageDrop = async (e, elemId) => {
     e.preventDefault()
     e.stopPropagation()
     setDragOverElemId(null)
-    const droppedFile = e.dataTransfer.files?.[0]
-    if (!droppedFile || !droppedFile.type.startsWith('image/')) return
 
-    const reader = new FileReader()
-    reader.onload = (evt) => {
-      updateElement(elemId, { dataUrl: evt.target.result })
+    const dataUrl = await getDroppedImageAsDataUrl(e)
+    if (dataUrl) {
+      updateElement(elemId, { dataUrl })
     }
-    reader.readAsDataURL(droppedFile)
   }
 
   const triggerImageReplacement = (elemId) => {
@@ -721,7 +691,7 @@ export function PptxWorkspace({
       )}
 
       {/* Upload View */}
-      {tabs.length === 0 && !loading && (
+      {!activeTab?.parsedData && !loading && (
         <div className="pptx-editor__upload-wrapper">
           <div
             className={`pptx-editor__dropzone${isDraggingUpload ? ' is-dragging' : ''}`}
@@ -756,7 +726,7 @@ export function PptxWorkspace({
       )}
 
       {/* Main Studio Workbench */}
-      {tabs.length > 0 && !loading && activeTab?.parsedData && (
+      {!loading && activeTab?.parsedData && (
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
           {viewMode === 'quick' ? (
             <QuickEditView

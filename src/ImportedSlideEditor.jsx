@@ -1,14 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-const readFileAsDataUrl = (file) =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result)
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
-  })
+import { readFileAsDataUrl, getDroppedImageAsDataUrl } from './utils/pairUtils'
 
 // ── Editable Image Slot ───────────────────────────────────────────────────────
 
@@ -18,10 +9,10 @@ function EditableImage({ el, onReplace }) {
 
   const handleDrop = useCallback(async (e) => {
     e.preventDefault()
+    e.stopPropagation()
     setIsDragging(false)
-    const file = e.dataTransfer.files?.[0]
-    if (file && file.type.startsWith('image/')) {
-      const dataUrl = await readFileAsDataUrl(file)
+    const dataUrl = await getDroppedImageAsDataUrl(e)
+    if (dataUrl) {
       onReplace(dataUrl)
     }
   }, [onReplace])
@@ -52,8 +43,18 @@ function EditableImage({ el, onReplace }) {
         cursor: 'pointer',
         background: el.dataUrl ? 'transparent' : 'rgba(11,122,56,0.06)',
       }}
-      onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }}
-      onDragEnter={(e) => { e.preventDefault(); setIsDragging(true) }}
+      onDragOver={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+        setIsDragging(true)
+      }}
+      onDragEnter={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+        setIsDragging(true)
+      }}
       onDragLeave={() => setIsDragging(false)}
       onDrop={handleDrop}
       onClick={() => inputRef.current?.click()}
@@ -336,9 +337,8 @@ export function ImportedSlideEditor({ title, slideData, templateUrl, onUseTempla
         style={{
           backgroundImage: slideData.backgroundDataUrl
             ? `url(${slideData.backgroundDataUrl})`
-            : templateUrl
-              ? `url(${templateUrl})`
-              : 'none',
+            : 'none',
+          backgroundColor: slideData.backgroundDataUrl ? 'transparent' : '#ffffff',
         }}
       >
         {!hasElements && (
