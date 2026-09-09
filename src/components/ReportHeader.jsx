@@ -24,6 +24,8 @@ export function ReportHeader({
   handleSaveReportDirect,
   handleDownload,
   onSelectReport,
+  hasImportedFile = false,
+  importedFileName = '',
 }) {
   const isStandardReportRoute =
     currentRoute === ROUTES.clean ||
@@ -94,10 +96,28 @@ export function ReportHeader({
               style={{ background: 'linear-gradient(135deg, #10b981, #059669)', borderColor: 'transparent', color: '#fff' }}
               onClick={() => handleSaveReportDirect(false)}
               disabled={!canDownload}
-              title="Save report directly to file on disk without downloading separate copies"
+              title={hasImportedFile
+                ? `Save report directly back to "${importedFileName}" on disk — no dialog`
+                : 'Save report directly to file on disk'}
             >
-              {isGenerating ? 'Building...' : '💾 Save File'}
+              {isGenerating
+                ? 'Building...'
+                : hasImportedFile
+                  ? `💾 Save to "${importedFileName}"`
+                  : '💾 Save File'}
             </button>
+            {hasImportedFile && (
+              <button
+                type="button"
+                className="button"
+                style={{ background: 'linear-gradient(135deg, #6366f1, #4f46e5)', borderColor: 'transparent', color: '#fff' }}
+                onClick={() => handleSaveReportDirect(true)}
+                disabled={!canDownload || isGenerating}
+                title="Save a copy of the report to a new location via file picker"
+              >
+                💾 Save As...
+              </button>
+            )}
             <button
               type="button"
               className="button"

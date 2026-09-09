@@ -91,6 +91,17 @@ function App({ data }) {
   const [activeTabId, setActiveTabId] = useState('home')
   const [isGlobalTabsHydrated, setIsGlobalTabsHydrated] = useState(false)
 
+  // Reveal Tauri main window smoothly once React and initial DOM have mounted
+  useEffect(() => {
+    if (typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)) {
+      import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+        getCurrentWindow().show()
+      }).catch((err) => {
+        console.warn('Could not show Tauri window:', err)
+      })
+    }
+  }, [])
+
   useEffect(() => {
     const handleGlobalDragOver = (e) => {
       e.preventDefault()
@@ -208,14 +219,16 @@ function App({ data }) {
     setActiveTabId(newTab.id)
   }
 
-  const openDocumentTab = (file, nativePath = null) => {
+  const openDocumentTab = (file, nativePath = null, fileHandle = null) => {
     const filePath = nativePath || file?.nativeFilePath || null
+    const handle = fileHandle || file?.fileHandle || null
     const newTab = {
       id: `doc_${Date.now()}`,
       type: 'document',
       title: file.name,
       file,
-      nativeFilePath: filePath
+      nativeFilePath: filePath,
+      fileHandle: handle
     }
     setTabs(prev => [...prev, newTab])
     setActiveTabId(newTab.id)
@@ -855,13 +868,17 @@ function App({ data }) {
   const movableCount = getMovableCount(pairs, { slotKeys, requiresText })
   const canDownload = (slideCount > 0 || incompletePairCount > 0) && !isGenerating && !isImporting
 
-  const handlePptxUpload = async (event) => {
+  const handlePptxUpload = async (event, resolvedNativePath = null) => {
     const file = event.target.files?.[0]
-    event.target.value = ''
+    if (typeof event.target.value !== 'undefined') event.target.value = ''
     if (!file) {
       return
     }
 
+    // Remember the on-disk path of the file being imported (for direct saves)
+    if (resolvedNativePath) {
+      setImportedPath(resolvedNativePath)
+    }
     const hasExisting = pairs.some((pair) => {
       const hasImages = slotKeys.some((key) => pair?.[key])
       const hasText = requiresText
@@ -948,7 +965,87 @@ function App({ data }) {
     }
   }
 
-  const handlePptxButtonClick = () => {
+
+
+  const routeFileHandlesRef = useRef({})
+  const routeNativePathsRef = useRef({})
+
+  const activeNativePath = routeNativePathsRef.current[currentRoute] || activeTab?.routeNativePaths?.[currentRoute] || ''
+  const activeWebName = (routeFileHandlesRef.current[currentRoute] || activeTab?.routeFileHandles?.[currentRoute])?.name || ''
+  const activeHasImportedFile = Boolean(activeNativePath || activeWebName)
+  const activeImportedFileName = activeNativePath ? activeNativePath.split(/[/\\]/).pop() : activeWebName
+
+  const setImportedPath = (path) => {
+    if (currentRoute) {
+      routeNativePathsRef.current[currentRoute] = path || ''
+      setTabs(prev => prev.map(t => {
+        if (t.id === activeTabId) {
+          const routeNativePaths = { ...(t.routeNativePaths || {}), [currentRoute]: path || '' }
+          return { ...t, routeNativePaths }
+        }
+        return t
+      }))
+    }
+  }
+
+  const setReportFileHandle = (handle) => {
+    if (currentRoute) {
+      routeFileHandlesRef.current[currentRoute] = handle || null
+      setTabs(prev => prev.map(t => {
+        if (t.id === activeTabId) {
+          const routeFileHandles = { ...(t.routeFileHandles || {}), [currentRoute]: handle || null }
+          return { ...t, routeFileHandles }
+        }
+        return t
+      }))
+    }
+  }
+
+  const handlePptxButtonClick = async () => {
+    // In Tauri, use the native file picker so we capture the disk path for
+    // direct saves later (no dialog on subsequent Saves).
+    if (typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        const nativePath = await invoke('pick_open_file')
+        if (!nativePath) return // user cancelled
+        const uint8Array = await invoke('read_binary_file', { path: nativePath })
+        const fileName = nativePath.split(/[/\\]/).pop() || 'Presentation.pptx'
+        const fileObj = new File([new Uint8Array(uint8Array)], fileName, {
+          type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        })
+        // Stash path so Save can write back directly to this specific template route
+        setImportedPath(nativePath)
+        // Feed into the existing import pipeline (synthetic event)
+        await handlePptxUpload({ target: { files: [fileObj], value: '' } }, nativePath)
+      } catch (err) {
+        console.error('Tauri open for import failed:', err)
+      }
+      return
+    }
+
+    // In Web mode, use Native File System Access API if available
+    if (typeof window.showOpenFilePicker === 'function') {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          types: [
+            {
+              description: 'PowerPoint Presentation',
+              accept: {
+                'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
+              },
+            },
+          ],
+        })
+        const selectedFile = await handle.getFile()
+        setReportFileHandle(handle)
+        await handlePptxUpload({ target: { files: [selectedFile], value: '' } })
+      } catch (err) {
+        if (err.name !== 'AbortError') console.error('Web native open failed:', err)
+      }
+      return
+    }
+
     pptxInputRef.current?.click()
   }
 
@@ -978,6 +1075,20 @@ function App({ data }) {
       setImportStatus({ type: 'idle', message: '' })
       setDragIndex(null)
       setDragOverIndex(null)
+      if (currentRoute) {
+        delete routeNativePathsRef.current[currentRoute]
+        delete routeFileHandlesRef.current[currentRoute]
+        setTabs(prev => prev.map(t => {
+          if (t.id === activeTabId) {
+            const routeNativePaths = { ...(t.routeNativePaths || {}) }
+            const routeFileHandles = { ...(t.routeFileHandles || {}) }
+            delete routeNativePaths[currentRoute]
+            delete routeFileHandles[currentRoute]
+            return { ...t, routeNativePaths, routeFileHandles }
+          }
+          return t
+        }))
+      }
     }
   }
 
@@ -1060,8 +1171,6 @@ function App({ data }) {
     setTimeout(() => URL.revokeObjectURL(url), 5000)
   }
 
-  const reportFileHandleRef = useRef(null)
-
   const handleSaveReportDirect = async (forceSaveAs = false) => {
     if (!canDownload) return
     try {
@@ -1081,11 +1190,39 @@ function App({ data }) {
         finalBlob = await postProcessPptxWithImportedSlides(blob, firstOpts, lastOpts)
       }
 
-      if (!forceSaveAs && reportFileHandleRef.current && typeof reportFileHandleRef.current.createWritable === 'function') {
-        const writable = await reportFileHandleRef.current.createWritable()
+      // ── Tauri: direct write to imported path, or picker for new files ─────
+      if (typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)) {
+        const { invoke } = await import('@tauri-apps/api/core')
+        let targetPath = !forceSaveAs ? (routeNativePathsRef.current[currentRoute] || activeTab?.routeNativePaths?.[currentRoute]) : null
+
+        if (!targetPath) {
+          // No imported file path → show picker (new/scratch file or forced Save As)
+          targetPath = await invoke('pick_save_file', { suggestedName: fileName })
+          if (!targetPath) return // user cancelled
+        }
+
+        const buffer = await finalBlob.arrayBuffer()
+        await invoke('write_binary_file', {
+          path: targetPath,
+          contents: Array.from(new Uint8Array(buffer)),
+        })
+        // Persist path on current route
+        setImportedPath(targetPath)
+        const shortName = targetPath.split(/[/\\]/).pop()
+        alert(forceSaveAs
+          ? `✓ Saved copy to "${shortName}"!`
+          : `✓ Saved directly to "${shortName}" on disk!`)
+        return
+      }
+
+      // ── Browser / Web File System Access API ─────────────────────────────
+      const currentHandle = routeFileHandlesRef.current[currentRoute] || activeTab?.routeFileHandles?.[currentRoute]
+      if (!forceSaveAs && currentHandle && typeof currentHandle.createWritable === 'function') {
+        const writable = await currentHandle.createWritable()
         await writable.write(finalBlob)
         await writable.close()
-        alert(`✓ Saved directly to "${reportFileHandleRef.current.name}" on disk!`)
+        setReportFileHandle(currentHandle)
+        alert(`✓ Saved directly to "${currentHandle.name}" on disk!`)
       } else if (typeof window.showSaveFilePicker === 'function') {
         const handle = await window.showSaveFilePicker({
           suggestedName: fileName,
@@ -1101,7 +1238,7 @@ function App({ data }) {
         const writable = await handle.createWritable()
         await writable.write(finalBlob)
         await writable.close()
-        reportFileHandleRef.current = handle
+        setReportFileHandle(handle)
         alert(`✓ Saved to "${handle.name}" on disk!`)
       } else {
         triggerBlobDownload(finalBlob, fileName)
@@ -1457,6 +1594,8 @@ function App({ data }) {
                         setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, route } : t))
                       }
                     }}
+                    hasImportedFile={activeHasImportedFile}
+                    importedFileName={activeImportedFileName}
                   />
                 )}
 

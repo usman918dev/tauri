@@ -104,6 +104,9 @@ export function PptxWorkspace({
       if (t.fileBuffer && !fileBuffersRef.current[t.id]) {
         fileBuffersRef.current[t.id] = t.fileBuffer
       }
+      if (t.fileHandle && !fileHandlesRef.current[t.id]) {
+        fileHandlesRef.current[t.id] = t.fileHandle
+      }
     })
   }, [tabs])
 
@@ -146,7 +149,8 @@ export function PptxWorkspace({
 
   const handleFileUpload = async (uploadedFile, fileHandle = null) => {
     if (!uploadedFile) return
-    onOpenNew(uploadedFile)
+    const handle = fileHandle || uploadedFile.fileHandle || null
+    onOpenNew(uploadedFile, uploadedFile.nativeFilePath || null, handle)
   }
 
   const handleNativeOpen = async () => {
@@ -186,6 +190,7 @@ export function PptxWorkspace({
           ],
         })
         const selectedFile = await handle.getFile()
+        selectedFile.fileHandle = handle
         handleFileUpload(selectedFile, handle)
       } catch (err) {
         if (err.name !== 'AbortError') console.error('Native open failed:', err)
@@ -251,15 +256,23 @@ export function PptxWorkspace({
         return
       }
 
+      // Web mode: use existing handle, or invoke showSaveFilePicker if no handle exists yet
+      const activeHandle = fileHandleRef.current || activeTab?.fileHandle
+      const hasSavePicker = typeof window.showSaveFilePicker === 'function'
       const res = await exportEditedPptx(exportFile, parsedData.slides, {
-        fileHandle: fileHandleRef.current,
-        saveAs: false,
-        download: !fileHandleRef.current,
+        fileHandle: activeHandle,
+        saveAs: !activeHandle && hasSavePicker,
+        download: !activeHandle && !hasSavePicker,
         outputFileName: exportFile.name,
       })
+
       if (res?.savedDirectly) {
-        showToast(`✓ Saved directly to "${res.fileName}" on disk!`)
-      } else {
+        if (res.fileHandle) {
+          fileHandleRef.current = res.fileHandle
+          setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, fileHandle: res.fileHandle } : t))
+        }
+        showToast(`✓ Saved directly to "${res.fileName || exportFile.name}" on disk!`)
+      } else if (res?.blob) {
         showToast(`✓ Exported "${exportFile.name}"!`)
       }
     } catch (err) {
@@ -632,10 +645,18 @@ export function PptxWorkspace({
                 className="pptx-ribbon__btn pptx-ribbon__btn--primary"
                 onClick={handleSaveDirect}
                 disabled={isExporting}
-                title="Save directly to original file on disk"
+                title={activeTab?.filename || fileHandleRef.current?.name || activeTab?.nativeFilePath
+                  ? `Save directly back to "${activeTab?.filename || fileHandleRef.current?.name || activeTab?.nativeFilePath?.split(/[/\\]/).pop()}" on disk`
+                  : 'Save directly to file on disk'}
               >
                 <span className="pptx-ribbon__icon">{isExporting ? '⏳' : '💾'}</span>
-                <span>{isExporting ? 'Saving...' : 'Save File'}</span>
+                <span>
+                  {isExporting
+                    ? 'Saving...'
+                    : (activeTab?.filename || fileHandleRef.current?.name || activeTab?.nativeFilePath)
+                      ? `Save to "${activeTab?.filename || fileHandleRef.current?.name || activeTab?.nativeFilePath?.split(/[/\\]/).pop()}"`
+                      : 'Save File'}
+                </span>
               </button>
 
               <button
