@@ -603,14 +603,29 @@ function App({ data }) {
       : ['beforeImage', 'afterImage']
   }, [template])
   const requiresText = Boolean(template.textBox)
-  const textDefault = template.textDefault || ''
+  const effectiveRouteKey =
+    currentRoute === ROUTES.master && effectivePresetId
+      ? `${currentRoute}:${effectivePresetId}`
+      : currentRoute
+
   const storageKey =
-    currentRoute === ROUTES.master && activePresetId
-      ? `pptxpro:slides:v1:${currentRoute}:${activePresetId}`
+    currentRoute === ROUTES.master && effectivePresetId
+      ? `pptxpro:slides:v1:${currentRoute}:${effectivePresetId}`
       : buildStorageKey(
         currentRoute,
         currentRoute === ROUTES.dailyPlot ? dailyVariant : '',
       )
+
+  useEffect(() => {
+    if (currentRoute === ROUTES.master && effectivePresetId) {
+      loadPairsFromDb(`pptxpro:custom-first-slide-data:${effectivePresetId}`).then((first) => {
+        setFirstSlideData(first || {})
+      })
+      loadPairsFromDb(`pptxpro:custom-last-slide-data:${effectivePresetId}`).then((last) => {
+        setLastSlideData(last || {})
+      })
+    }
+  }, [currentRoute, effectivePresetId])
   const [prevKeyInfo, setPrevKeyInfo] = useState({ slotKeys, storageKey })
   if (slotKeys !== prevKeyInfo.slotKeys || storageKey !== prevKeyInfo.storageKey) {
     setPrevKeyInfo({ slotKeys, storageKey })
@@ -970,17 +985,17 @@ function App({ data }) {
   const routeFileHandlesRef = useRef({})
   const routeNativePathsRef = useRef({})
 
-  const activeNativePath = routeNativePathsRef.current[currentRoute] || activeTab?.routeNativePaths?.[currentRoute] || ''
-  const activeWebName = (routeFileHandlesRef.current[currentRoute] || activeTab?.routeFileHandles?.[currentRoute])?.name || ''
+  const activeNativePath = routeNativePathsRef.current[effectiveRouteKey] || activeTab?.routeNativePaths?.[effectiveRouteKey] || ''
+  const activeWebName = (routeFileHandlesRef.current[effectiveRouteKey] || activeTab?.routeFileHandles?.[effectiveRouteKey])?.name || ''
   const activeHasImportedFile = Boolean(activeNativePath || activeWebName)
   const activeImportedFileName = activeNativePath ? activeNativePath.split(/[/\\]/).pop() : activeWebName
 
   const setImportedPath = (path) => {
-    if (currentRoute) {
-      routeNativePathsRef.current[currentRoute] = path || ''
+    if (effectiveRouteKey) {
+      routeNativePathsRef.current[effectiveRouteKey] = path || ''
       setTabs(prev => prev.map(t => {
         if (t.id === activeTabId) {
-          const routeNativePaths = { ...(t.routeNativePaths || {}), [currentRoute]: path || '' }
+          const routeNativePaths = { ...(t.routeNativePaths || {}), [effectiveRouteKey]: path || '' }
           return { ...t, routeNativePaths }
         }
         return t
@@ -989,11 +1004,11 @@ function App({ data }) {
   }
 
   const setReportFileHandle = (handle) => {
-    if (currentRoute) {
-      routeFileHandlesRef.current[currentRoute] = handle || null
+    if (effectiveRouteKey) {
+      routeFileHandlesRef.current[effectiveRouteKey] = handle || null
       setTabs(prev => prev.map(t => {
         if (t.id === activeTabId) {
-          const routeFileHandles = { ...(t.routeFileHandles || {}), [currentRoute]: handle || null }
+          const routeFileHandles = { ...(t.routeFileHandles || {}), [effectiveRouteKey]: handle || null }
           return { ...t, routeFileHandles }
         }
         return t
@@ -1075,15 +1090,15 @@ function App({ data }) {
       setImportStatus({ type: 'idle', message: '' })
       setDragIndex(null)
       setDragOverIndex(null)
-      if (currentRoute) {
-        delete routeNativePathsRef.current[currentRoute]
-        delete routeFileHandlesRef.current[currentRoute]
+      if (effectiveRouteKey) {
+        delete routeNativePathsRef.current[effectiveRouteKey]
+        delete routeFileHandlesRef.current[effectiveRouteKey]
         setTabs(prev => prev.map(t => {
           if (t.id === activeTabId) {
             const routeNativePaths = { ...(t.routeNativePaths || {}) }
             const routeFileHandles = { ...(t.routeFileHandles || {}) }
-            delete routeNativePaths[currentRoute]
-            delete routeFileHandles[currentRoute]
+            delete routeNativePaths[effectiveRouteKey]
+            delete routeFileHandles[effectiveRouteKey]
             return { ...t, routeNativePaths, routeFileHandles }
           }
           return t
@@ -1193,7 +1208,7 @@ function App({ data }) {
       // ── Tauri: direct write to imported path, or picker for new files ─────
       if (typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)) {
         const { invoke } = await import('@tauri-apps/api/core')
-        let targetPath = !forceSaveAs ? (routeNativePathsRef.current[currentRoute] || activeTab?.routeNativePaths?.[currentRoute]) : null
+        let targetPath = !forceSaveAs ? (routeNativePathsRef.current[effectiveRouteKey] || activeTab?.routeNativePaths?.[effectiveRouteKey]) : null
 
         if (!targetPath) {
           // No imported file path → show picker (new/scratch file or forced Save As)
@@ -1216,7 +1231,7 @@ function App({ data }) {
       }
 
       // ── Browser / Web File System Access API ─────────────────────────────
-      const currentHandle = routeFileHandlesRef.current[currentRoute] || activeTab?.routeFileHandles?.[currentRoute]
+      const currentHandle = routeFileHandlesRef.current[effectiveRouteKey] || activeTab?.routeFileHandles?.[effectiveRouteKey]
       if (!forceSaveAs && currentHandle && typeof currentHandle.createWritable === 'function') {
         const writable = await currentHandle.createWritable()
         await writable.write(finalBlob)
