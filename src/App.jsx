@@ -603,6 +603,7 @@ function App({ data }) {
       : ['beforeImage', 'afterImage']
   }, [template])
   const requiresText = Boolean(template.textBox)
+  const textDefault = template.textDefault || ''
   const effectiveRouteKey =
     currentRoute === ROUTES.master && effectivePresetId
       ? `${currentRoute}:${effectivePresetId}`
@@ -635,7 +636,6 @@ function App({ data }) {
     const storedPairs = loadStoredPairsSync(storageKey)
     const source = resolvePairsSource({
       storedPairs,
-      data,
       template,
       slotKeys,
       textDefault,
@@ -691,7 +691,6 @@ function App({ data }) {
 
       const source = resolvePairsSource({
         storedPairs,
-        data,
         template,
         slotKeys,
         textDefault,
