@@ -277,7 +277,10 @@ export function PptxWorkspace({
       }
     } catch (err) {
       console.error('Save error:', err)
-      alert('Error saving PPTX: ' + err.message)
+      const rawErr = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || 'Unknown error'
+      const isLocked = typeof rawErr === 'string' && (rawErr.includes('used by another process') || rawErr.includes('os error 32') || rawErr.includes('Access is denied'))
+      const extraHint = isLocked ? '\n\n💡 Hint: The file appears to be open in PowerPoint or another app. Please close PowerPoint and try saving again.' : ''
+      alert('Error saving PPTX: ' + rawErr + extraHint)
     } finally {
       setIsExporting(false)
     }
@@ -343,7 +346,10 @@ export function PptxWorkspace({
       }
     } catch (err) {
       console.error('Save As error:', err)
-      alert('Error saving PPTX: ' + err.message)
+      const rawErr = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || 'Unknown error'
+      const isLocked = typeof rawErr === 'string' && (rawErr.includes('used by another process') || rawErr.includes('os error 32') || rawErr.includes('Access is denied'))
+      const extraHint = isLocked ? '\n\n💡 Hint: The file appears to be open in PowerPoint or another app. Please close PowerPoint and try saving again.' : ''
+      alert('Error saving PPTX: ' + rawErr + extraHint)
     } finally {
       setIsExporting(false)
     }

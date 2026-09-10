@@ -1259,9 +1259,12 @@ function App({ data }) {
         triggerBlobDownload(finalBlob, fileName)
       }
     } catch (err) {
-      if (err.name !== 'AbortError') {
+      if (err?.name !== 'AbortError') {
         console.error('Save report error:', err)
-        alert('Failed to save presentation: ' + err.message)
+        const rawErr = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || 'Unknown error'
+        const isLocked = typeof rawErr === 'string' && (rawErr.includes('used by another process') || rawErr.includes('os error 32') || rawErr.includes('Access is denied'))
+        const extraHint = isLocked ? '\n\n💡 Hint: The file appears to be open in PowerPoint or another app. Please close PowerPoint and try saving again.' : ''
+        alert('Failed to save presentation: ' + rawErr + extraHint)
       }
     } finally {
       setIsGenerating(false)

@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "sign": "powershell -ExecutionPolicy Bypass -File ./scripts/sign_app.ps1",
+    "build:desktop": "tauri build && npm run sign"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
