@@ -16,6 +16,46 @@ const parseXml = (xmlText) => {
   return doc
 }
 
+const getNodesByLocalName = (parent, localName) => {
+  if (!parent) return []
+  const all = parent.getElementsByTagName('*')
+  const matched = []
+  const targetLower = localName.toLowerCase()
+  for (let i = 0; i < all.length; i++) {
+    const node = all[i]
+    const name = (node.localName || node.nodeName || '').toLowerCase()
+    if (name === targetLower || name.endsWith(':' + targetLower)) {
+      matched.push(node)
+    }
+  }
+  return matched
+}
+
+const extractTextFromShape = (spNode) => {
+  if (!spNode) return ''
+  const pNodes = getNodesByLocalName(spNode, 'p')
+  if (pNodes.length > 0) {
+    const pTexts = pNodes.map((p) => {
+      const allElems = p.getElementsByTagName('*')
+      let str = ''
+      for (let i = 0; i < allElems.length; i++) {
+        const el = allElems[i]
+        const name = (el.localName || el.nodeName || '').toLowerCase()
+        if (name === 't' || name.endsWith(':t')) {
+          str += el.textContent || ''
+        } else if (name === 'br' || name.endsWith(':br')) {
+          str += '\n'
+        }
+      }
+      return str
+    }).filter((t) => t.length > 0)
+    return pTexts.join('\n').trim()
+  }
+
+  const tNodes = getNodesByLocalName(spNode, 't')
+  return tNodes.map((t) => t.textContent || '').join('\n').trim()
+}
+
 const getFirstTag = (node, names) => {
   for (const name of names) {
     const list = node.getElementsByTagName(name)
@@ -244,15 +284,7 @@ const getTextShapesFromSlide = (slideDoc, slideSize) => {
       continue
     }
 
-    // Collect all text runs (a:r > a:t) within this shape
-    const tNodes = Array.from(sp.getElementsByTagName('a:t').length
-      ? sp.getElementsByTagName('a:t')
-      : sp.getElementsByTagName('t'))
-
-    const text = tNodes
-      .map((t) => t.textContent || '')
-      .join('')
-      .trim()
+    const text = extractTextFromShape(sp)
 
     if (!text) {
       continue
@@ -1405,14 +1437,44 @@ export const applyEditsToSlideXml = (rawXml, editedData) => {
     if (!foundElem || foundElem.text === undefined) continue
     foundElem._matched = true
 
-    const tNodes = Array.from(
-      sp.getElementsByTagName('a:t').length
-        ? sp.getElementsByTagName('a:t')
-        : sp.getElementsByTagName('t'),
-    )
-    if (tNodes.length === 0) continue
-    tNodes[0].textContent = foundElem.text || ''
-    for (let i = 1; i < tNodes.length; i++) tNodes[i].textContent = ''
+    const textVal = foundElem.text || ''
+    const lines = textVal.split('\n')
+
+    const pNodes = getNodesByLocalName(sp, 'p')
+
+    if (pNodes.length > 0 && lines.length > 1) {
+      const firstP = pNodes[0]
+      const txBody = firstP.parentElement
+
+      const pTemplate = firstP.cloneNode(true)
+
+      const newPList = lines.map((lineStr) => {
+        const pClone = pTemplate.cloneNode(true)
+        const tNodes = getNodesByLocalName(pClone, 't')
+        if (tNodes.length > 0) {
+          tNodes[0].textContent = lineStr
+          tNodes[0].setAttribute('xml:space', 'preserve')
+          for (let i = 1; i < tNodes.length; i++) tNodes[i].textContent = ''
+        }
+        return pClone
+      })
+
+      if (txBody) {
+        pNodes.forEach((oldP) => {
+          if (oldP.parentElement === txBody) {
+            txBody.removeChild(oldP)
+          }
+        })
+        newPList.forEach((newP) => txBody.appendChild(newP))
+      }
+    } else {
+      const tNodes = getNodesByLocalName(sp, 't')
+      if (tNodes.length > 0) {
+        tNodes[0].textContent = textVal
+        tNodes[0].setAttribute('xml:space', 'preserve')
+        for (let i = 1; i < tNodes.length; i++) tNodes[i].textContent = ''
+      }
+    }
   }
 
   // ── Update table cells ────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import './PptxEditor.css'
 import { parsePptxForEditing, exportEditedPptx } from './report/pptxEditorUtils'
 import { loadPptxEditorState, savePptxEditorState, clearPptxEditorState } from './utils/storage'
 import { getDroppedImageAsDataUrl } from './utils/pairUtils'
@@ -54,6 +55,10 @@ export function PptxWorkspace({
       newTabs[idx] = { ...prev[idx], viewMode: nextMode }
       return newTabs
     })
+  }
+
+  const handleModeChange = (mode) => {
+    setViewMode(mode)
   }
 
   const [loading, setLoading] = useState(false)

@@ -39,6 +39,46 @@ const getFirstTag = (node, names) => {
   return null
 }
 
+export const getNodesByLocalName = (parent, localName) => {
+  if (!parent) return []
+  const all = parent.getElementsByTagName('*')
+  const matched = []
+  const targetLower = localName.toLowerCase()
+  for (let i = 0; i < all.length; i++) {
+    const node = all[i]
+    const name = (node.localName || node.nodeName || '').toLowerCase()
+    if (name === targetLower || name.endsWith(':' + targetLower)) {
+      matched.push(node)
+    }
+  }
+  return matched
+}
+
+export const extractTextFromShape = (spNode) => {
+  if (!spNode) return ''
+  const pNodes = getNodesByLocalName(spNode, 'p')
+  if (pNodes.length > 0) {
+    const pTexts = pNodes.map((p) => {
+      const allElems = p.getElementsByTagName('*')
+      let str = ''
+      for (let i = 0; i < allElems.length; i++) {
+        const el = allElems[i]
+        const name = (el.localName || el.nodeName || '').toLowerCase()
+        if (name === 't' || name.endsWith(':t')) {
+          str += el.textContent || ''
+        } else if (name === 'br' || name.endsWith(':br')) {
+          str += '\n'
+        }
+      }
+      return str
+    }).filter((t) => t.length > 0)
+    return pTexts.join('\n').trim()
+  }
+
+  const tNodes = getNodesByLocalName(spNode, 't')
+  return tNodes.map((t) => t.textContent || '').join('\n').trim()
+}
+
 const resolveSolidFillColor = (solidFillEl) => {
   if (!solidFillEl) return ''
   const srgb = solidFillEl.getElementsByTagName('a:srgbClr')[0]
@@ -394,16 +434,7 @@ export const parsePptxForEditing = async (file) => {
 
       if (areaEmu >= maxBgAreaEmu) continue
 
-      const tNodes = Array.from(
-        sp.getElementsByTagName('a:t').length
-          ? sp.getElementsByTagName('a:t')
-          : sp.getElementsByTagName('t'),
-      )
-
-      const text = tNodes
-        .map((t) => t.textContent || '')
-        .join('')
-        .trim()
+      const text = extractTextFromShape(sp)
 
       if (!text) continue
 

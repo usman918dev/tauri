@@ -10,7 +10,7 @@ import { SlideCanvas } from './components/SlideCanvas'
 import { PairCard } from './components/PairCard'
 import { ReportHeader } from './components/ReportHeader'
 import { ROUTES, normalizeRoute } from './config/routes'
-import { TEMPLATES, getTemplateForPath } from './config/templates'
+import { TEMPLATES, getTemplateForPath, DESILTING_PRESET_TEXT } from './config/templates'
 import {
   buildStorageKey,
   canUseStorage,
@@ -979,6 +979,60 @@ function App({ data }) {
     }
   }
 
+  const handleInsertPhotoAlbum = (imageDataUrls, imagesPerSlide = 1, mode = 'replace') => {
+    if (!imageDataUrls || imageDataUrls.length === 0) return
+
+    const effectiveImagesPerSlide = Math.min(
+      Math.max(1, Number(imagesPerSlide)),
+      slotKeys.length || 2
+    )
+
+    const chunks = []
+    for (let i = 0; i < imageDataUrls.length; i += effectiveImagesPerSlide) {
+      chunks.push(imageDataUrls.slice(i, i + effectiveImagesPerSlide))
+    }
+
+    const isDesilting = template?.masterTitle === TEMPLATES[ROUTES.desilting]?.masterTitle
+
+    const newPairs = chunks.map((chunk, slideIndex) => {
+      const pair = buildEmptyPair(slotKeys, textDefault)
+      if (isDesilting && DESILTING_PRESET_TEXT[slideIndex]) {
+        pair.slideText = DESILTING_PRESET_TEXT[slideIndex]
+      }
+      chunk.forEach((imgUrl, slotIndex) => {
+        if (slotKeys[slotIndex]) {
+          pair[slotKeys[slotIndex]] = imgUrl
+        }
+      })
+      return pair
+    })
+
+    setPairs((prevPairs) => {
+      let updatedPairs = []
+      if (mode === 'replace') {
+        updatedPairs = newPairs
+      } else {
+        const existingNonEmpty = trimTrailingEmptyPairs(prevPairs, { slotKeys, requiresText })
+        if (isDesilting) {
+          newPairs.forEach((pair, idx) => {
+            const actualIdx = existingNonEmpty.length + idx
+            if (DESILTING_PRESET_TEXT[actualIdx]) {
+              pair.slideText = DESILTING_PRESET_TEXT[actualIdx]
+            }
+          })
+        }
+        updatedPairs = [...existingNonEmpty, ...newPairs]
+      }
+      return normalizePairs(updatedPairs, { slotKeys, requiresText, textDefault })
+    })
+
+    setImportStatus({
+      type: 'success',
+      message: `📸 Photo Album: Successfully inserted ${imageDataUrls.length} image(s) across ${chunks.length} slide(s) (${effectiveImagesPerSlide} image(s) per slide).`,
+    })
+  }
+
+
 
 
   const routeFileHandlesRef = useRef({})
@@ -1613,6 +1667,8 @@ function App({ data }) {
                     }}
                     hasImportedFile={activeHasImportedFile}
                     importedFileName={activeImportedFileName}
+                    onInsertPhotoAlbum={handleInsertPhotoAlbum}
+                    slotKeys={slotKeys}
                   />
                 )}
 

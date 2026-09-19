@@ -392,7 +392,9 @@
   border-radius: 4px;
   padding: 2px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .pptx-canvas__text:hover {
@@ -415,10 +417,13 @@
   outline: none;
   resize: none;
   font-family: inherit;
-  line-height: 1.2;
+  line-height: 1.25;
   box-sizing: border-box;
   padding: 0;
   margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 /* 2. Image Element */
@@ -639,6 +644,8 @@
   box-sizing: border-box;
   outline: none;
   resize: vertical;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .pptx-inspector__textarea:focus {

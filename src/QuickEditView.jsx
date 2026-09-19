@@ -158,16 +158,17 @@ export function QuickEditView({
                     >
                       <textarea
                         className="pptx-canvas__text-input"
-                        value={elem.text}
+                        value={elem.text || ''}
                         onChange={(e) => updateElement(elem.id, { text: e.target.value })}
                         placeholder="Enter text..."
-                        rows={1}
                         style={{
                           fontSize: 'inherit',
                           fontFamily: 'inherit',
                           color: 'inherit',
                           fontWeight: 'inherit',
                           textAlign: 'inherit',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
                         }}
                       />
                     </div>
