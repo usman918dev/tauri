@@ -99,8 +99,12 @@ pub fn run() {
     .setup(|app| {
       #[cfg(desktop)]
       {
-        app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
-        app.handle().plugin(tauri_plugin_process::init())?;
+        if let Err(err) = app.handle().plugin(tauri_plugin_updater::Builder::new().build()) {
+          eprintln!("Failed to initialize updater plugin: {}", err);
+        }
+        if let Err(err) = app.handle().plugin(tauri_plugin_process::init()) {
+          eprintln!("Failed to initialize process plugin: {}", err);
+        }
       }
       if cfg!(debug_assertions) {
         app.handle().plugin(
