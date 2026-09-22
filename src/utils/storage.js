@@ -17,6 +17,31 @@ export const buildStorageKey = (route, variant = '') => {
   return `${STORAGE_PREFIX}:${normalizedRoute}:${resolvedVariant}`
 }
 
+export const isTauri = () => {
+  return (
+    typeof window !== 'undefined' &&
+    Boolean(
+      window.__TAURI_INTERNALS__ ||
+        window.__TAURI__ ||
+        window.__TAURI_IPC__
+    )
+  )
+}
+
+let tauriInvokePromise = null
+const getTauriInvoke = async () => {
+  if (!isTauri()) return null
+  if (!tauriInvokePromise) {
+    tauriInvokePromise = import('@tauri-apps/api/core')
+      .then((mod) => mod.invoke)
+      .catch((err) => {
+        console.warn('Failed to load Tauri IPC invoke module:', err)
+        return null
+      })
+  }
+  return await tauriInvokePromise
+}
+
 export const canUseStorage = () => {
   try {
     return typeof window !== 'undefined' && Boolean(window.localStorage)
@@ -50,7 +75,8 @@ export const openPairsDb = () =>
     request.onerror = () => reject(request.error)
   })
 
-export const loadPairsFromDb = async (storageKey) => {
+// Low-level raw IndexedDB reader for fallback & transparent initial migration
+export const loadPairsFromIndexedDbRaw = async (storageKey) => {
   if (!storageKey || !canUseIndexedDb()) {
     return null
   }
@@ -72,8 +98,63 @@ export const loadPairsFromDb = async (storageKey) => {
   }
 }
 
+export const loadPairsFromDb = async (storageKey) => {
+  if (!storageKey) {
+    return null
+  }
+
+  // 1. Tauri Native Desktop Mode: read directly from %AppData% disk storage
+  if (isTauri()) {
+    try {
+      const invoke = await getTauriInvoke()
+      if (invoke) {
+        const raw = await invoke('load_app_data', { key: storageKey })
+        if (raw !== null && raw !== undefined) {
+          try {
+            return typeof raw === 'string' ? JSON.parse(raw) : raw
+          } catch {
+            return raw
+          }
+        }
+        // Transparent Migration: If key is not in native disk storage yet, check IndexedDB
+        const legacyData = await loadPairsFromIndexedDbRaw(storageKey)
+        if (legacyData !== null && legacyData !== undefined) {
+          // Store legacy IndexedDB data to native disk storage for all future launches
+          await savePairsToDb(storageKey, legacyData)
+          return legacyData
+        }
+        return null
+      }
+    } catch (err) {
+      console.warn(`[Tauri Native Storage] Error loading key "${storageKey}":`, err)
+    }
+  }
+
+  // 2. Web Browser Fallback Mode: IndexedDB
+  return await loadPairsFromIndexedDbRaw(storageKey)
+}
+
 export const savePairsToDb = async (storageKey, pairs) => {
-  if (!storageKey || !canUseIndexedDb()) {
+  if (!storageKey) {
+    return
+  }
+
+  // 1. Tauri Native Desktop Mode: write directly to %AppData% disk storage
+  if (isTauri()) {
+    try {
+      const invoke = await getTauriInvoke()
+      if (invoke) {
+        const payload = typeof pairs === 'string' ? pairs : JSON.stringify(pairs)
+        await invoke('save_app_data', { key: storageKey, data: payload })
+        return
+      }
+    } catch (err) {
+      console.warn(`[Tauri Native Storage] Error saving key "${storageKey}":`, err)
+    }
+  }
+
+  // 2. Web Browser Fallback Mode: IndexedDB
+  if (!canUseIndexedDb()) {
     return
   }
   try {
@@ -100,7 +181,25 @@ export const savePairsToDb = async (storageKey, pairs) => {
 }
 
 export const removePairsFromDb = async (storageKey) => {
-  if (!storageKey || !canUseIndexedDb()) {
+  if (!storageKey) {
+    return
+  }
+
+  // 1. Tauri Native Desktop Mode: delete file from %AppData% disk storage
+  if (isTauri()) {
+    try {
+      const invoke = await getTauriInvoke()
+      if (invoke) {
+        await invoke('remove_app_data', { key: storageKey })
+        return
+      }
+    } catch (err) {
+      console.warn(`[Tauri Native Storage] Error removing key "${storageKey}":`, err)
+    }
+  }
+
+  // 2. Web Browser Fallback Mode: IndexedDB
+  if (!canUseIndexedDb()) {
     return
   }
   try {

@@ -1,14 +1,18 @@
-name: Build Tauri App
+name: Build & Release Tauri App
 
 on:
   push:
     branches:
       - main
       - master
-  workflow_dispatch: # Allows you to trigger this workflow manually
+    tags:
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
-  build-windows:
+  release:
+    permissions:
+      contents: write
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -19,18 +23,28 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install Rust stable
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
       - name: Install frontend dependencies
         run: npm install
-        
-      - name: Build Tauri application
-        run: npx tauri build
-        
-      - name: Upload Windows Installer
+
+      - name: Build & Publish Release with Tauri Action
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'PPTXPro v__VERSION__'
+          releaseBody: 'Automated release generated on push.'
+          releaseDraft: false
+          prerelease: false
+
+      - name: Upload Windows Installer Artifact
         uses: actions/upload-artifact@v4
         with:
           name: pptxpro-windows-installer

@@ -11,6 +11,7 @@ import { PairCard } from './components/PairCard'
 import { ReportHeader } from './components/ReportHeader'
 import { ROUTES, normalizeRoute } from './config/routes'
 import { TEMPLATES, getTemplateForPath, DESILTING_PRESET_TEXT } from './config/templates'
+import { checkAppUpdates } from './utils/updater'
 import {
   buildStorageKey,
   canUseStorage,
@@ -339,8 +340,9 @@ function App({ data }) {
           if (last) setLastSlideData(last)
         }
       } catch (err) {
-        console.error('Failed to load master preset data from IndexedDB', err)
+        console.error('Failed to load master preset data from storage', err)
       }
+      void checkAppUpdates()
     }
     loadCustomData()
   }, [])
