@@ -161,26 +161,52 @@ function App({ data }) {
 
   useEffect(() => {
     if (!isGlobalTabsHydrated) return
-    import('./utils/storage').then(({ savePptxEditorState }) => {
-      savePptxEditorState({
-        activeTabId,
-        tabs: tabs.filter(t => t && t.id !== 'home' && (t.title || t.filename)).map(t => ({
-          id: t.id,
-          type: t.type,
-          toolId: t.toolId,
-          title: t.title || t.filename,
-          route: t.route,
-          presetId: t.presetId,
-          designerMode: t.designerMode,
-          filename: t.filename || t.file?.name,
-          nativeFilePath: t.nativeFilePath || t.file?.nativeFilePath || null,
-          fileBuffer: t.fileBuffer,
-          parsedData: t.parsedData,
-          activeSlideIndex: t.activeSlideIndex,
-          viewMode: t.viewMode,
-        }))
+    // Debounce: wait 600ms after the last change before writing to storage.
+    // This prevents hammering IndexedDB/Tauri on every rapid state update
+    // (slide index changes, parse flags, etc.)
+    const timer = setTimeout(() => {
+      import('./utils/storage').then(({ savePptxEditorState }) => {
+        savePptxEditorState({
+          activeTabId,
+          tabs: tabs.filter(t => t && t.id !== 'home' && (t.title || t.filename)).map(t => {
+            // Strip image dataUrls from parsedData elements before storage.
+            // They can be MBs of base64 — the fileBuffer is stored anyway so
+            // parsedData can be re-parsed on restore. We keep structural metadata.
+            let parsedDataToStore = t.parsedData
+            if (parsedDataToStore?.slides) {
+              parsedDataToStore = {
+                ...parsedDataToStore,
+                slides: parsedDataToStore.slides.map(slide => ({
+                  ...slide,
+                  backgroundDataUrl: '', // strip large bg image
+                  elements: (slide.elements || []).map(el =>
+                    el.type === 'image'
+                      ? { ...el, dataUrl: '', originalDataUrl: '' }
+                      : el
+                  ),
+                })),
+              }
+            }
+            return {
+              id: t.id,
+              type: t.type,
+              toolId: t.toolId,
+              title: t.title || t.filename,
+              route: t.route,
+              presetId: t.presetId,
+              designerMode: t.designerMode,
+              filename: t.filename || t.file?.name,
+              nativeFilePath: t.nativeFilePath || t.file?.nativeFilePath || null,
+              fileBuffer: t.fileBuffer,
+              parsedData: parsedDataToStore,
+              activeSlideIndex: t.activeSlideIndex,
+              viewMode: t.viewMode,
+            }
+          })
+        })
       })
-    })
+    }, 600)
+    return () => clearTimeout(timer)
   }, [tabs, activeTabId, isGlobalTabsHydrated])
 
   const openToolTab = (tool) => {
@@ -629,11 +655,16 @@ function App({ data }) {
       })
     }
   }, [currentRoute, effectivePresetId])
-  const [prevKeyInfo, setPrevKeyInfo] = useState({ slotKeys, storageKey })
-  if (slotKeys !== prevKeyInfo.slotKeys || storageKey !== prevKeyInfo.storageKey) {
-    setPrevKeyInfo({ slotKeys, storageKey })
-    setIsHydrated(false)
-  }
+  // Track previous storageKey/slotKeys to reset hydration when route changes.
+  // Using useRef + useEffect instead of setState-during-render (which is illegal in React).
+  const prevKeyRef = useRef({ slotKeys, storageKey })
+  useEffect(() => {
+    if (slotKeys !== prevKeyRef.current.slotKeys || storageKey !== prevKeyRef.current.storageKey) {
+      prevKeyRef.current = { slotKeys, storageKey }
+      setIsHydrated(false)
+    }
+  }, [slotKeys, storageKey])
+
   const [pairs, setPairs] = useState(() => {
     const storedPairs = loadStoredPairsSync(storageKey)
     const source = resolvePairsSource({

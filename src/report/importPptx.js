@@ -1777,7 +1777,30 @@ export const postProcessPptxWithImportedSlides = async (
     const rIdRemap = new Map()
     let mediaCounter = 0
 
-    for (const [oldRId, rel] of (importedSlide.fullRelMap || new Map())) {
+    // --- FIX: fullRelMap and mediaFiles are Maps that become plain objects after
+    //     JSON.stringify/parse (IndexedDB/Tauri storage roundtrip). Reconstruct them.
+    const rawFullRelMap = importedSlide.fullRelMap
+    const fullRelMap = rawFullRelMap instanceof Map
+      ? rawFullRelMap
+      : new Map(rawFullRelMap && typeof rawFullRelMap === 'object' ? Object.entries(rawFullRelMap) : [])
+
+    // mediaFiles stores ArrayBuffers which are also destroyed by JSON serialization.
+    // We rebuild from fullRelMap entries using the images[] dataUrls as fallback.
+    const rawMediaFiles = importedSlide.mediaFiles
+    const mediaFiles = rawMediaFiles instanceof Map
+      ? rawMediaFiles
+      : new Map() // will be empty after deserialization — we'll fallback to dataUrl below
+
+    // Build a dataUrl lookup keyed by embed rId for fallback when mediaFiles is empty
+    const embedToDataUrl = new Map()
+    if (mediaFiles.size === 0 && Array.isArray(importedSlide.images)) {
+      importedSlide.images.forEach((img) => {
+        if (img.embed && img.dataUrl) embedToDataUrl.set(img.embed, img.dataUrl)
+        if (img.embed && img.originalDataUrl) embedToDataUrl.set(`${img.embed}_orig`, img.originalDataUrl)
+      })
+    }
+
+    for (const [oldRId, rel] of fullRelMap) {
       if (!/image/i.test(rel.type)) {
         // Preserve non-image relationships (e.g. hyperlinks, shapes, drawings) so rIds in XML remain valid
         if (!rel.type.endsWith('/slideLayout') && !rel.type.endsWith('/slideMaster')) {
@@ -1817,10 +1840,21 @@ export const postProcessPptxWithImportedSlides = async (
         const ext = dataUrl.includes('image/png') ? 'png'
           : dataUrl.includes('image/gif') ? 'gif' : 'jpg'
         mediaPath = `ppt/media/imp_s${slideNum}_r${mediaCounter++}.${ext}`
-      } else if (importedSlide.mediaFiles?.has(normalizedTarget)) {
-        mediaBuf = importedSlide.mediaFiles.get(normalizedTarget)
+      } else if (mediaFiles.has(normalizedTarget)) {
+        mediaBuf = mediaFiles.get(normalizedTarget)
         const origName = normalizedTarget.split('/').pop()
         mediaPath = `ppt/media/imp_s${slideNum}_${mediaCounter++}_${origName}`
+      } else if (embedToDataUrl.has(oldRId)) {
+        // Fallback: reconstruct from the stored dataUrl when mediaFiles was lost in JSON roundtrip
+        const dataUrl = embedToDataUrl.get(oldRId)
+        const b64 = dataUrl.replace(/^data:[^;]+;base64,/, '')
+        const binary = atob(b64)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        mediaBuf = bytes.buffer
+        const ext = dataUrl.includes('image/png') ? 'png'
+          : dataUrl.includes('image/gif') ? 'gif' : 'jpg'
+        mediaPath = `ppt/media/imp_s${slideNum}_fb${mediaCounter++}.${ext}`
       } else {
         continue
       }

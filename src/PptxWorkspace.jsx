@@ -85,6 +85,7 @@ export function PptxWorkspace({
 
   const isHydratedRef = useRef(false)
   const fullCanvasRef = useRef(null)
+  const parsingTabsRef = useRef(new Set())
   const [toastMessage, setToastMessage] = useState('')
   const [deferredPrompt, setDeferredPrompt] = useState(null)
 
@@ -116,39 +117,45 @@ export function PptxWorkspace({
   }, [tabs])
 
   // Auto-parse new document tabs from App.jsx
+  // Uses a ref-tracked Set to prevent any tab from being parsed more than once,
+  // breaking the [tabs, setTabs] -> setTabs -> tabs -> effect infinite loop.
   useEffect(() => {
-    const parseNewTabs = async () => {
-      const unparsed = Array.isArray(tabs) ? tabs.find(t => t.file && !t.fileBuffer && !t.isParsing) : null
-      if (unparsed) {
-        setTabs(prev => prev.map(t => t.id === unparsed.id ? { ...t, isParsing: true } : t))
-        setLoading(true)
-        setError('')
-        try {
-          const buffer = await unparsed.file.arrayBuffer()
-          fileBuffersRef.current[unparsed.id] = buffer
-          const data = await parsePptxForEditing(unparsed.file)
-          
-          setTabs(prev => prev.map(t => t.id === unparsed.id ? {
-            ...t,
-            filename: unparsed.file.name,
-            title: unparsed.file.name,
-            fileBuffer: buffer,
-            parsedData: data,
-            activeSlideIndex: 0,
-            viewMode: 'quick',
-            isParsing: false
-          } : t))
-        } catch (err) {
-          console.error(err)
-          setError(err.message || 'Failed to parse PPTX file structure.')
-          setTabs(prev => prev.map(t => t.id === unparsed.id ? { ...t, isParsing: false, error: true } : t))
-        } finally {
-          setLoading(false)
-        }
+    const unparsed = Array.isArray(tabs)
+      ? tabs.find((t) => t.file && !t.fileBuffer && !t.isParsing && !parsingTabsRef.current.has(t.id))
+      : null
+    if (!unparsed) return
+
+    // Mark this tab as in-progress immediately (before any async work)
+    parsingTabsRef.current.add(unparsed.id)
+    setTabs(prev => prev.map(t => t.id === unparsed.id ? { ...t, isParsing: true } : t))
+    setLoading(true)
+    setError('')
+
+    const run = async () => {
+      try {
+        const buffer = await unparsed.file.arrayBuffer()
+        fileBuffersRef.current[unparsed.id] = buffer
+        const data = await parsePptxForEditing(unparsed.file)
+        setTabs(prev => prev.map(t => t.id === unparsed.id ? {
+          ...t,
+          filename: unparsed.file.name,
+          title: unparsed.file.name,
+          fileBuffer: buffer,
+          parsedData: data,
+          activeSlideIndex: 0,
+          viewMode: 'quick',
+          isParsing: false,
+        } : t))
+      } catch (err) {
+        console.error(err)
+        setError(err.message || 'Failed to parse PPTX file structure.')
+        setTabs(prev => prev.map(t => t.id === unparsed.id ? { ...t, isParsing: false, error: true } : t))
+      } finally {
+        setLoading(false)
       }
     }
-    parseNewTabs()
-  }, [tabs, setTabs])
+    run()
+  }, [tabs]) // setTabs is stable, no need in deps
 
   const isTauriEnv = () => typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)
 
@@ -360,17 +367,21 @@ export function PptxWorkspace({
     }
   }
 
-  // Keyboard shortcut listener (Ctrl+S / Cmd+S) for 1-click direct file save
+  // Keyboard shortcut listener (Ctrl+S / Cmd+S) for 1-click direct file save.
+  // Use a ref so the listener is added ONCE and always calls the latest handler,
+  // avoiding the teardown/re-add churn on every parsedData change.
+  const handleSaveDirectRef = useRef(null)
+  handleSaveDirectRef.current = handleSaveDirect
   useEffect(() => {
     const handleSaveShortcut = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
-        handleSaveDirect()
+        handleSaveDirectRef.current?.()
       }
     }
     window.addEventListener('keydown', handleSaveShortcut)
     return () => window.removeEventListener('keydown', handleSaveShortcut)
-  }, [activeTabId, viewMode, parsedData, file])
+  }, []) // add once, ref keeps it current
 
   const handleExport = async () => {
     const exportFile =

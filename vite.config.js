@@ -9,7 +9,16 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
-      external: ['ai', '@ai-sdk/react'],
+      // These packages are Tauri-native and only resolve inside `tauri build`.
+      // They are always guarded by isTauri() checks at runtime, so externalizing
+      // them here lets plain `vite build` succeed without errors.
+      external: [
+        'ai',
+        '@ai-sdk/react',
+        '@tauri-apps/plugin-updater',
+        '@tauri-apps/plugin-process',
+      ],
     },
   },
 })
+
