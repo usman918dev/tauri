@@ -11,7 +11,8 @@ export function PptxWorkspace({
   activeTabId = null, 
   setActiveTabId = () => {}, 
   onCloseTab = () => {}, 
-  onOpenNew = () => {} 
+  onOpenNew = () => {},
+  onDirtyChange = () => {},
 }) {
 
   const activeTab = (Array.isArray(tabs) ? tabs.find((t) => t.id === activeTabId) : null) || null
@@ -66,6 +67,17 @@ export function PptxWorkspace({
   const [selectedElementId, setSelectedElementId] = useState(null)
   const [isExporting, setIsExporting] = useState(false)
   const [isDraggingUpload, setIsDraggingUpload] = useState(false)
+  const [isDirty, setIsDirty] = useState(false)
+
+  // Notify parent whenever dirty state changes
+  const markDirty = () => {
+    setIsDirty(true)
+    onDirtyChange(true)
+  }
+  const markClean = () => {
+    setIsDirty(false)
+    onDirtyChange(false)
+  }
 
   const [dragOverElemId, setDragOverElemId] = useState(null)
   const imageInputRef = useRef(null)
@@ -88,6 +100,106 @@ export function PptxWorkspace({
   const parsingTabsRef = useRef(new Set())
   const [toastMessage, setToastMessage] = useState('')
   const [deferredPrompt, setDeferredPrompt] = useState(null)
+
+  // ── Per-tab undo / redo stacks ──────────────────────────────────────────
+  // Each entry is a full parsedData snapshot. Stacks are keyed by tab ID
+  // so switching tabs preserves each file's own history independently.
+  const undoStacksRef = useRef({})   // tabId → parsedData[]
+  const redoStacksRef = useRef({})   // tabId → parsedData[]
+  const MAX_HISTORY = 7              // cap memory usage
+
+  const getUndoStack = () => undoStacksRef.current[activeTabId] || (undoStacksRef.current[activeTabId] = [])
+  const getRedoStack = () => redoStacksRef.current[activeTabId] || (redoStacksRef.current[activeTabId] = [])
+
+  /**
+   * commitParsedData — the ONLY way to make a user-driven change to parsedData.
+   * It pushes the CURRENT state to the undo stack, wipes the redo stack,
+   * then applies the new state.
+   *
+   * @param {Function|Object} updaterOrValue  Same signature as setParsedData:
+   *   either a new parsedData object, or a function (prev) => newParsedData.
+   */
+  const commitParsedData = (updaterOrValue) => {
+    // Capture current snapshot BEFORE the update
+    const currentSnapshot = parsedData
+    if (!currentSnapshot) return
+
+    const undoStack = getUndoStack()
+    const redoStack = getRedoStack()
+
+    // Push snapshot (trim to max)
+    undoStack.push(currentSnapshot)
+    if (undoStack.length > MAX_HISTORY) undoStack.shift()
+
+    // A new action invalidates the redo future
+    redoStack.length = 0
+
+    // Apply the update
+    setParsedData(updaterOrValue)
+  }
+
+  const undo = () => {
+    const undoStack = getUndoStack()
+    const redoStack = getRedoStack()
+    if (undoStack.length === 0) return
+
+    // Save current state to redo stack
+    const currentSnapshot = parsedData
+    if (currentSnapshot) {
+      redoStack.push(currentSnapshot)
+      if (redoStack.length > MAX_HISTORY) redoStack.shift()
+    }
+
+    // Restore previous state directly (bypass commitParsedData so we don’t push to undo)
+    const prev = undoStack.pop()
+    setParsedData(prev)
+    markDirty()
+  }
+
+  const redo = () => {
+    const undoStack = getUndoStack()
+    const redoStack = getRedoStack()
+    if (redoStack.length === 0) return
+
+    // Save current state to undo stack
+    const currentSnapshot = parsedData
+    if (currentSnapshot) {
+      undoStack.push(currentSnapshot)
+      if (undoStack.length > MAX_HISTORY) undoStack.shift()
+    }
+
+    // Restore next state directly
+    const next = redoStack.pop()
+    setParsedData(next)
+    markDirty()
+  }
+
+  // ── Keyboard shortcut listener ──────────────────────────────────────────
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      // Only handle when no text input / textarea is focused to avoid conflicts
+      const tag = document.activeElement?.tagName
+      const isTyping = tag === 'TEXTAREA' || tag === 'INPUT' || document.activeElement?.isContentEditable
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        // Allow Ctrl+Z in text inputs naturally; only intercept at the canvas/workspace level
+        if (!isTyping) {
+          e.preventDefault()
+          undo()
+        }
+      } else if (
+        (e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))
+      ) {
+        if (!isTyping) {
+          e.preventDefault()
+          redo()
+        }
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedData, activeTabId])  // re-bind when active data or tab changes
 
   useEffect(() => {
     const handleBeforeInstall = (e) => {
@@ -262,6 +374,7 @@ export function PptxWorkspace({
             })
             // Persist nativeFilePath on tab
             setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, nativeFilePath: nativePath } : t))
+            markClean()
             showToast(`✓ Saved directly to "${nativePath}" on disk!`)
           }
         }
@@ -283,6 +396,7 @@ export function PptxWorkspace({
           fileHandleRef.current = res.fileHandle
           setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, fileHandle: res.fileHandle } : t))
         }
+        markClean()
         showToast(`✓ Saved directly to "${res.fileName || exportFile.name}" on disk!`)
       } else if (res?.blob) {
         showToast(`✓ Exported "${exportFile.name}"!`)
@@ -425,7 +539,8 @@ export function PptxWorkspace({
   }
 
   const updateElement = (elemId, updates) => {
-    setParsedData((prev) => {
+    markDirty()
+    commitParsedData((prev) => {
       if (!prev) return prev
       const newSlides = [...prev.slides]
       const slide = { ...newSlides[activeSlideIndex] }
@@ -436,6 +551,63 @@ export function PptxWorkspace({
       newSlides[activeSlideIndex] = slide
       return { ...prev, slides: newSlides }
     })
+  }
+
+  const addTextElement = () => {
+    if (!parsedData) return
+    markDirty()
+    const newElem = {
+      id: `added_text_${Date.now()}`,
+      type: 'text',
+      tagName: '<p:sp> Text',
+      text: 'New Text Box',
+      originalText: '',
+      fontFace: 'Calibri',
+      fontSizePct: 2.5,
+      bold: false,
+      italic: false,
+      color: '111111',
+      align: 'left',
+      isTitle: false,
+      xPct: 10,
+      yPct: 40,
+      wPct: 40,
+      hPct: 15,
+    }
+    commitParsedData((prev) => {
+      if (!prev) return prev
+      const newSlides = [...prev.slides]
+      const slide = { ...newSlides[activeSlideIndex] }
+      slide.elements = [...slide.elements, newElem]
+      newSlides[activeSlideIndex] = slide
+      return { ...prev, slides: newSlides }
+    })
+    setSelectedElementId(newElem.id)
+  }
+
+  const addImageElement = () => {
+    if (!parsedData) return
+    markDirty()
+    const newElem = {
+      id: `added_image_${Date.now()}`,
+      type: 'image',
+      tagName: '<p:pic> Image',
+      dataUrl: '',
+      originalDataUrl: '',
+      xPct: 30,
+      yPct: 25,
+      wPct: 40,
+      hPct: 50,
+    }
+    commitParsedData((prev) => {
+      if (!prev) return prev
+      const newSlides = [...prev.slides]
+      const slide = { ...newSlides[activeSlideIndex] }
+      slide.elements = [...slide.elements, newElem]
+      newSlides[activeSlideIndex] = slide
+      return { ...prev, slides: newSlides }
+    })
+    setSelectedElementId(newElem.id)
   }
 
   const handleElementImageDrop = async (e, elemId) => {
@@ -470,7 +642,8 @@ export function PptxWorkspace({
   }
 
   const handleTableCellChange = (elemId, rowIndex, colIndex, newText) => {
-    setParsedData((prev) => {
+    markDirty()
+    commitParsedData((prev) => {
       if (!prev) return prev
       const newSlides = [...prev.slides]
       const slide = { ...newSlides[activeSlideIndex] }
@@ -492,6 +665,7 @@ export function PptxWorkspace({
   }
 
   const handleAddSlide = () => {
+    markDirty()
     if (!parsedData) return
     const newSlideNum = parsedData.slides.length + 1
     const newSlide = {
@@ -524,7 +698,7 @@ export function PptxWorkspace({
       backgroundDataUrl: '',
       rawXml: '',
     }
-    setParsedData((prev) => {
+    commitParsedData((prev) => {
       const slides = [...prev.slides, newSlide]
       return { ...prev, slides }
     })
@@ -532,8 +706,9 @@ export function PptxWorkspace({
   }
 
   const moveSlide = (fromIndex, toIndex) => {
+    markDirty()
     if (toIndex < 0 || toIndex >= parsedData.slides.length) return
-    setParsedData((prev) => {
+    commitParsedData((prev) => {
       const slides = [...prev.slides]
       const [moved] = slides.splice(fromIndex, 1)
       slides.splice(toIndex, 0, moved)
@@ -544,7 +719,8 @@ export function PptxWorkspace({
   }
 
   const duplicateSlide = (index) => {
-    setParsedData((prev) => {
+    markDirty()
+    commitParsedData((prev) => {
       const slides = [...prev.slides]
       const orig = slides[index]
       const copy = {
@@ -566,7 +742,8 @@ export function PptxWorkspace({
       alert('Cannot delete the last slide in the presentation.')
       return
     }
-    setParsedData((prev) => {
+    markDirty()
+    commitParsedData((prev) => {
       const slides = prev.slides.filter((_, i) => i !== index)
       const renumbered = slides.map((s, idx) => ({ ...s, slideNumber: idx + 1 }))
       return { ...prev, slides: renumbered }
@@ -576,7 +753,8 @@ export function PptxWorkspace({
 
   const deleteSelectedElement = () => {
     if (!selectedElementId || !parsedData?.slides?.[activeSlideIndex]) return
-    setParsedData((prev) => {
+    markDirty()
+    commitParsedData((prev) => {
       const newSlides = [...prev.slides]
       const slide = { ...newSlides[activeSlideIndex] }
       slide.elements = slide.elements.filter((e) => e.id !== selectedElementId)
@@ -647,6 +825,35 @@ export function PptxWorkspace({
                 }}
               >
                 🎨 Full Editor
+              </button>
+            </div>
+
+            <div className="pptx-ribbon__divider" />
+
+            <div className="pptx-ribbon__group">
+              {/* ── Undo / Redo ── */}
+              <button
+                type="button"
+                className="pptx-ribbon__btn pptx-ribbon__btn--ghost"
+                onClick={undo}
+                disabled={!getUndoStack().length}
+                title={`Undo (Ctrl+Z) — ${getUndoStack().length} step${getUndoStack().length !== 1 ? 's' : ''} available`}
+                style={{ opacity: getUndoStack().length ? 1 : 0.4 }}
+              >
+                <span className="pptx-ribbon__icon">↩</span>
+                <span>Undo</span>
+              </button>
+
+              <button
+                type="button"
+                className="pptx-ribbon__btn pptx-ribbon__btn--ghost"
+                onClick={redo}
+                disabled={!getRedoStack().length}
+                title={`Redo (Ctrl+Y) — ${getRedoStack().length} step${getRedoStack().length !== 1 ? 's' : ''} available`}
+                style={{ opacity: getRedoStack().length ? 1 : 0.4 }}
+              >
+                <span className="pptx-ribbon__icon">↪</span>
+                <span>Redo</span>
               </button>
             </div>
 
@@ -790,6 +997,8 @@ export function PptxWorkspace({
               duplicateSlide={duplicateSlide}
               deleteSlide={deleteSlide}
               deleteSelectedElement={deleteSelectedElement}
+              addTextElement={addTextElement}
+              addImageElement={addImageElement}
             />
           ) : (
             <FullCanvasEditor

@@ -1,3 +1,9 @@
+const FONT_FACES = [
+  'Calibri', 'Arial', 'Arial Narrow', 'Times New Roman', 'Georgia',
+  'Verdana', 'Tahoma', 'Trebuchet MS', 'Comic Sans MS', 'Segoe UI',
+  'Helvetica', 'Garamond', 'Palatino', 'Book Antiqua',
+]
+
 export function QuickEditView({
   parsedData,
   activeSlideIndex,
@@ -15,6 +21,8 @@ export function QuickEditView({
   duplicateSlide,
   deleteSlide,
   deleteSelectedElement,
+  addTextElement,
+  addImageElement,
 }) {
   const activeSlide = parsedData?.slides?.[activeSlideIndex]
   const selectedElem = activeSlide?.elements?.find((e) => e.id === selectedElementId)
@@ -118,7 +126,7 @@ export function QuickEditView({
             <span>{activeSlide?.title}</span>
           </div>
           <span className="pptx-stage__hint">
-            💡 Double-click text to edit • Drag & drop images onto slots to replace
+            💡 Double-click text to edit • Drag &amp; drop images onto slots to replace
           </span>
         </div>
 
@@ -149,6 +157,7 @@ export function QuickEditView({
                         fontFamily: elem.fontFace || 'Calibri',
                         color: elem.color ? `#${elem.color}` : 'inherit',
                         fontWeight: elem.bold ? 'bold' : 'normal',
+                        fontStyle: elem.italic ? 'italic' : 'normal',
                         textAlign: elem.align || 'left',
                       }}
                       onClick={(e) => {
@@ -166,6 +175,7 @@ export function QuickEditView({
                           fontFamily: 'inherit',
                           color: 'inherit',
                           fontWeight: 'inherit',
+                          fontStyle: 'inherit',
                           textAlign: 'inherit',
                           whiteSpace: 'pre-wrap',
                           wordBreak: 'break-word',
@@ -206,7 +216,7 @@ export function QuickEditView({
                       ) : (
                         <div className="pptx-canvas__img-placeholder">
                           <span>🖼️ Image Slot</span>
-                          <small>Drag & drop or click replace</small>
+                          <small>Drag &amp; drop or click replace</small>
                         </div>
                       )}
 
@@ -297,16 +307,42 @@ export function QuickEditView({
       <aside className="pptx-inspector">
         <div className="pptx-inspector__header">
           <h3>Element Inspector</h3>
-          {selectedElem && (
-            <button
-              type="button"
-              className="pptx-mini-btn pptx-mini-btn--danger"
-              onClick={deleteSelectedElement}
-              title="Delete Selected Element"
-            >
-              🗑️ Delete
-            </button>
-          )}
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+            {/* Add Text Box button */}
+            {activeSlide && (
+              <button
+                type="button"
+                className="pptx-mini-btn"
+                onClick={addTextElement}
+                title="Add a new text box to this slide"
+                style={{ fontSize: '10px' }}
+              >
+                📝 Text
+              </button>
+            )}
+            {/* Add Image Slot button */}
+            {activeSlide && (
+              <button
+                type="button"
+                className="pptx-mini-btn"
+                onClick={addImageElement}
+                title="Add a new image placeholder to this slide"
+                style={{ fontSize: '10px' }}
+              >
+                🖼️ Image
+              </button>
+            )}
+            {selectedElem && (
+              <button
+                type="button"
+                className="pptx-mini-btn pptx-mini-btn--danger"
+                onClick={deleteSelectedElement}
+                title="Delete Selected Element"
+              >
+                🗑️ Delete
+              </button>
+            )}
+          </div>
         </div>
 
         {selectedElem ? (
@@ -318,7 +354,7 @@ export function QuickEditView({
 
             {/* Position Controls */}
             <div className="pptx-inspector__section">
-              <h4 className="pptx-inspector__title">Position & Size (%)</h4>
+              <h4 className="pptx-inspector__title">Position &amp; Size (%)</h4>
               <div className="pptx-inspector__grid">
                 <label>
                   <span>Left X</span>
@@ -369,13 +405,14 @@ export function QuickEditView({
                 <h4 className="pptx-inspector__title">Text Content</h4>
                 <textarea
                   className="pptx-inspector__textarea"
-                  rows={5}
+                  rows={4}
                   value={selectedElem.text}
                   onChange={(e) =>
                     updateElement(selectedElem.id, { text: e.target.value })
                   }
                 />
 
+                {/* Row 1: Bold + Italic + Align */}
                 <div className="pptx-inspector__row">
                   <label className="pptx-inspector__checkbox">
                     <input
@@ -386,6 +423,17 @@ export function QuickEditView({
                       }
                     />
                     <span>Bold</span>
+                  </label>
+
+                  <label className="pptx-inspector__checkbox">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selectedElem.italic)}
+                      onChange={(e) =>
+                        updateElement(selectedElem.id, { italic: e.target.checked })
+                      }
+                    />
+                    <span>Italic</span>
                   </label>
 
                   <label className="pptx-inspector__field">
@@ -401,6 +449,65 @@ export function QuickEditView({
                       <option value="right">Right</option>
                     </select>
                   </label>
+                </div>
+
+                {/* Row 2: Font & Size */}
+                <div className="pptx-inspector__row" style={{ gap: '8px' }}>
+                  <label className="pptx-inspector__field" style={{ flex: 1 }}>
+                    <span>Font:</span>
+                    <select
+                      value={selectedElem.fontFace || 'Calibri'}
+                      onChange={(e) =>
+                        updateElement(selectedElem.id, { fontFace: e.target.value })
+                      }
+                      style={{ flex: 1, minWidth: 0 }}
+                    >
+                      {FONT_FACES.map((f) => (
+                        <option key={f} value={f}>{f}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="pptx-inspector__field">
+                    <span>Size:</span>
+                    <input
+                      type="number"
+                      min="0.5"
+                      max="20"
+                      step="0.1"
+                      value={parseFloat((selectedElem.fontSizePct || 1.8).toFixed(1))}
+                      onChange={(e) =>
+                        updateElement(selectedElem.id, { fontSizePct: Number(e.target.value) })
+                      }
+                      style={{ width: '60px' }}
+                      title="Font size in cqw units"
+                    />
+                  </label>
+                </div>
+
+                {/* Row 3: Color picker */}
+                <div className="pptx-inspector__row" style={{ alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Color:</span>
+                  <input
+                    type="color"
+                    value={`#${(selectedElem.color || '111111').replace(/^#/, '')}`}
+                    onChange={(e) => {
+                      const hex = e.target.value.replace('#', '')
+                      updateElement(selectedElem.id, { color: hex })
+                    }}
+                    style={{
+                      width: '36px',
+                      height: '28px',
+                      padding: '2px',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      background: 'none',
+                    }}
+                    title="Text color"
+                  />
+                  <span style={{ fontSize: '11px', color: '#64748b', fontFamily: 'monospace' }}>
+                    #{(selectedElem.color || '111111').replace(/^#/, '').toUpperCase()}
+                  </span>
                 </div>
               </div>
             )}
@@ -427,8 +534,77 @@ export function QuickEditView({
             )}
           </div>
         ) : (
-          <div className="pptx-inspector__none">
-            Select an element on the slide canvas to inspect and edit properties.
+          <div className="pptx-inspector__empty-state">
+            <div className="pptx-inspector__none">
+              Select an element on the slide canvas to inspect and edit properties.
+            </div>
+            {activeSlide && (
+              <div style={{ padding: '16px', borderTop: '1px solid #e2e8f0' }}>
+                <p style={{ fontSize: '11px', color: '#64748b', margin: '0 0 10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Add Element to Slide
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={addTextElement}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 14px',
+                      background: 'linear-gradient(135deg, rgba(37,99,235,0.07), rgba(37,99,235,0.12))',
+                      border: '1px solid rgba(37,99,235,0.25)',
+                      borderRadius: '8px',
+                      color: '#1d4ed8',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'all 0.15s ease',
+                    }}
+                    onMouseOver={e => e.currentTarget.style.background = 'linear-gradient(135deg, rgba(37,99,235,0.12), rgba(37,99,235,0.2))'}
+                    onMouseOut={e => e.currentTarget.style.background = 'linear-gradient(135deg, rgba(37,99,235,0.07), rgba(37,99,235,0.12))'}
+                  >
+                    <span style={{ fontSize: '18px' }}>📝</span>
+                    <div>
+                      <div>Add Text Box</div>
+                      <div style={{ fontSize: '11px', fontWeight: 400, color: '#3b82f6', marginTop: '1px' }}>
+                        Editable text element
+                      </div>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={addImageElement}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 14px',
+                      background: 'linear-gradient(135deg, rgba(124,58,237,0.07), rgba(124,58,237,0.12))',
+                      border: '1px solid rgba(124,58,237,0.25)',
+                      borderRadius: '8px',
+                      color: '#6d28d9',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'all 0.15s ease',
+                    }}
+                    onMouseOver={e => e.currentTarget.style.background = 'linear-gradient(135deg, rgba(124,58,237,0.12), rgba(124,58,237,0.2))'}
+                    onMouseOut={e => e.currentTarget.style.background = 'linear-gradient(135deg, rgba(124,58,237,0.07), rgba(124,58,237,0.12))'}
+                  >
+                    <span style={{ fontSize: '18px' }}>🖼️</span>
+                    <div>
+                      <div>Add Image Slot</div>
+                      <div style={{ fontSize: '11px', fontWeight: 400, color: '#7c3aed', marginTop: '1px' }}>
+                        Image placeholder with drag &amp; drop
+                      </div>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </aside>

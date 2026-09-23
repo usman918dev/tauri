@@ -273,6 +273,11 @@ function App({ data }) {
     })
   }
 
+  // Mark a specific tab as dirty (unsaved changes) or clean
+  const setTabDirty = (tabId, dirty) => {
+    setTabs(prev => prev.map(t => t.id === tabId ? { ...t, isDirty: dirty } : t))
+  }
+
   const activeTab = tabs.find(t => t.id === activeTabId)
   const currentRoute = activeTab?.route || ROUTES.clean
 
@@ -1517,6 +1522,19 @@ function App({ data }) {
   const handleClose = async () => {
     if (isTauriEnv()) {
       try {
+        // Check for any document tabs with unsaved changes
+        const dirtyTabs = tabs.filter(t => t.type === 'document' && t.isDirty)
+        if (dirtyTabs.length > 0) {
+          const fileNames = dirtyTabs.map(t => `• ${t.title || t.filename || 'Untitled'}`).join('\n')
+          const choice = window.confirm(
+            `You have unsaved changes in ${dirtyTabs.length} file${dirtyTabs.length > 1 ? 's' : ''}:\n${fileNames}\n\nSave before closing? (Click OK to close anyway without saving)`
+          )
+          if (!choice) {
+            // User clicked Cancel — abort close
+            return
+          }
+          // User clicked OK — close without saving
+        }
         await getCurrentWindow().close()
       } catch (err) {
         console.error('Failed to close window:', err)
@@ -1627,6 +1645,21 @@ function App({ data }) {
             }}
           >
             {t.type === 'home' ? '🏠' : null}
+            {/* 🟢 Unsaved-changes indicator — shown for dirty document tabs */}
+            {t.isDirty && t.type === 'document' && (
+              <span
+                title="Unsaved changes"
+                style={{
+                  display: 'inline-block',
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  background: '#22c55e',
+                  flexShrink: 0,
+                  boxShadow: '0 0 4px #22c55e88',
+                }}
+              />
+            )}
             <span style={{ fontSize: 'var(--text-sm)', fontWeight: t.id === activeTabId ? 600 : 400, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {t.title}
             </span>
@@ -1660,6 +1693,7 @@ function App({ data }) {
                   setActiveTabId={setActiveTabId}
                   onCloseTab={closeTab}
                   onOpenNew={() => { }}
+                  onDirtyChange={(dirty) => setTabDirty(tab.id, dirty)}
                 />
               </Suspense>
             ) : (

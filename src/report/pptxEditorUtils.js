@@ -525,9 +525,11 @@ export const parsePptxForEditing = async (file) => {
 
 
 
+
 /**
  * Re-compiles edited presentation and triggers browser save/download.
  * Supports Native File System Access API for direct 1-click file overwrite.
+ * Handles deletion of elements (text/image/table) and deleted slides.
  */
 export const exportEditedPptx = async (originalFile, slidesData, options = {}) => {
   const { download = true, fileHandle = null, saveAs = false, outputFileName = '' } =
@@ -542,6 +544,179 @@ export const exportEditedPptx = async (originalFile, slidesData, options = {}) =
   const parser = new DOMParser()
   const serializer = new XMLSerializer()
 
+  // ── Helper: physically remove XML nodes for deleted elements ──────────────
+  const removeDeletedElements = (xmlText, slide) => {
+    if (!slide.elements) return xmlText
+
+    const keepTextIndices = new Set(
+      slide.elements.filter((e) => e.type === 'text' && e.spIndex != null).map((e) => e.spIndex)
+    )
+    const keepPicIndices = new Set(
+      slide.elements.filter((e) => e.type === 'image' && e.picIndex != null).map((e) => e.picIndex)
+    )
+    const hasIndexedTexts = slide.elements.some((e) => e.type === 'text' && e.spIndex != null)
+    const hasIndexedPics = slide.elements.some((e) => e.type === 'image' && e.picIndex != null)
+
+    const doc = parser.parseFromString(xmlText, 'application/xml')
+    if (doc.getElementsByTagName('parsererror').length > 0) return xmlText
+
+    // Remove deleted <p:sp> (text shapes) by spIndex
+    if (hasIndexedTexts) {
+      const spNodes = Array.from(
+        doc.getElementsByTagName('p:sp').length
+          ? doc.getElementsByTagName('p:sp')
+          : doc.getElementsByTagName('sp')
+      )
+      spNodes.forEach((sp, sIdx) => {
+        if (!keepTextIndices.has(sIdx)) {
+          sp.parentNode?.removeChild(sp)
+        }
+      })
+    }
+
+    // Remove deleted <p:pic> (images) by picIndex
+    if (hasIndexedPics) {
+      const picNodes = Array.from(
+        doc.getElementsByTagName('p:pic').length
+          ? doc.getElementsByTagName('p:pic')
+          : doc.getElementsByTagName('pic')
+      )
+      picNodes.forEach((pic, pIdx) => {
+        if (!keepPicIndices.has(pIdx)) {
+          pic.parentNode?.removeChild(pic)
+        }
+      })
+    }
+
+    // Remove deleted <p:graphicFrame> (tables) — identify by x/y position-based id
+    const keepTableIds = new Set(
+      slide.elements.filter((e) => e.type === 'table').map((e) => e.id)
+    )
+    const framesToCheck = []
+    const frameTagNames = ['p:graphicFrame', 'graphicFrame']
+    for (const tagName of frameTagNames) {
+      const nodes = Array.from(doc.getElementsByTagName(tagName))
+      if (nodes.length === 0) continue
+      nodes.forEach((frame) => {
+        const tbl = frame.getElementsByTagName('a:tbl')[0] || frame.getElementsByTagName('tbl')[0]
+        if (!tbl) return
+        const xfrm = frame.getElementsByTagName('p:xfrm')[0] || frame.getElementsByTagName('xfrm')[0]
+        const off = xfrm?.getElementsByTagName('a:off')[0] || xfrm?.getElementsByTagName('off')[0]
+        const x = off?.getAttribute('x') || '0'
+        const y = off?.getAttribute('y') || '0'
+        framesToCheck.push({ frame, computedId: `tbl_${x}_${y}` })
+      })
+      break
+    }
+    framesToCheck.forEach(({ frame, computedId }) => {
+      if (!keepTableIds.has(computedId)) {
+        frame.parentNode?.removeChild(frame)
+      }
+    })
+
+    let result = serializer.serializeToString(doc)
+    if (!result.startsWith('<?xml')) {
+      result = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + result
+    }
+    return result
+  }
+
+  // ── Build set of xmlPaths still present in slidesData ────────────────────
+  const activeSlidePaths = new Set(slidesData.map((s) => s.xmlPath).filter(Boolean))
+
+  // ── Remove deleted slides from zip, presentation.xml, content types ───────
+  const deletedOrigPaths = originalSlidePaths.filter((p) => !activeSlidePaths.has(p))
+  if (deletedOrigPaths.length > 0) {
+    // 1. Remove slide XML + rels files from zip
+    deletedOrigPaths.forEach((path) => {
+      zip.remove(path)
+      zip.remove(getSlideRelsPath(path))
+    })
+
+    // 2. Update ppt/presentation.xml sldIdLst
+    const presFile = zip.file('ppt/presentation.xml')
+    if (presFile) {
+      const presXml = await presFile.async('text')
+      const presDoc = parser.parseFromString(presXml, 'application/xml')
+      const sldIdLst =
+        presDoc.getElementsByTagName('p:sldIdLst')[0] ||
+        presDoc.getElementsByTagName('sldIdLst')[0]
+
+      const presRelsFile =
+        zip.file('ppt/_rels/presentation.xml.rels') ||
+        zip.file('ppt/_rels/Presentation.xml.rels')
+
+      if (sldIdLst && presRelsFile) {
+        const presRelsXml = await presRelsFile.async('text')
+        const presRelsDoc = parser.parseFromString(presRelsXml, 'application/xml')
+
+        // Build rId → normalizedPath map from presentation rels
+        const rIdToPath = new Map()
+        Array.from(presRelsDoc.getElementsByTagName('Relationship')).forEach((rel) => {
+          const id = rel.getAttribute('Id')
+          const target = rel.getAttribute('Target')
+          if (id && target) rIdToPath.set(id, normalizeTarget(target))
+        })
+
+        const deletedNorm = new Set(deletedOrigPaths.map((p) => normalizeTarget(p)))
+        const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+
+        // Remove sldId nodes whose r:id resolves to a deleted slide path
+        const sldIdNodes = Array.from(
+          sldIdLst.getElementsByTagName('p:sldId').length
+            ? sldIdLst.getElementsByTagName('p:sldId')
+            : sldIdLst.getElementsByTagName('sldId')
+        )
+        const rIdsToRemove = new Set()
+        sldIdNodes.forEach((sldId) => {
+          const rId = sldId.getAttribute('r:id') || sldId.getAttributeNS(NS_R, 'id')
+          const resolvedPath = rId ? rIdToPath.get(rId) : null
+          if (resolvedPath && deletedNorm.has(resolvedPath)) {
+            sldIdLst.removeChild(sldId)
+            rIdsToRemove.add(rId)
+          }
+        })
+
+        // Remove corresponding rels entries
+        rIdsToRemove.forEach((rId) => {
+          Array.from(presRelsDoc.getElementsByTagName('Relationship')).forEach((rel) => {
+            if (rel.getAttribute('Id') === rId) rel.parentNode?.removeChild(rel)
+          })
+        })
+
+        let newPresRels = serializer.serializeToString(presRelsDoc)
+        if (!newPresRels.startsWith('<?xml')) {
+          newPresRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + newPresRels
+        }
+        zip.file(presRelsFile.name || 'ppt/_rels/presentation.xml.rels', newPresRels)
+      }
+
+      let newPresXml = serializer.serializeToString(presDoc)
+      if (!newPresXml.startsWith('<?xml')) {
+        newPresXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + newPresXml
+      }
+      zip.file('ppt/presentation.xml', newPresXml)
+    }
+
+    // 3. Remove deleted slides from [Content_Types].xml
+    const ctFile = zip.file('[Content_Types].xml')
+    if (ctFile) {
+      const ctXml = await ctFile.async('text')
+      const ctDoc = parser.parseFromString(ctXml, 'application/xml')
+      const deletedNormSet = new Set(deletedOrigPaths.map((p) => '/' + p.replace(/^\//, '')))
+      Array.from(ctDoc.getElementsByTagName('Override')).forEach((ov) => {
+        const partName = ov.getAttribute('PartName') || ''
+        if (deletedNormSet.has(partName)) ov.parentNode?.removeChild(ov)
+      })
+      let newCtXml = serializer.serializeToString(ctDoc)
+      if (!newCtXml.startsWith('<?xml')) {
+        newCtXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + newCtXml
+      }
+      zip.file('[Content_Types].xml', newCtXml)
+    }
+  }
+
+  // ── Process each surviving slide ─────────────────────────────────────────
   for (let sIdx = 0; sIdx < slidesData.length; sIdx++) {
     const slide = slidesData[sIdx]
     const origPath = slide.xmlPath || originalSlidePaths[sIdx]
@@ -567,10 +742,13 @@ export const exportEditedPptx = async (originalFile, slidesData, options = {}) =
     const texts = slide.elements ? slide.elements.filter((e) => e.type === 'text') : []
     const tables = slide.elements ? slide.elements.filter((e) => e.type === 'table') : []
 
-    // 1. Apply text and table edits using raw XML DOM transformer engine
-    let updatedXml = applyEditsToSlideXml(slideXmlText, { texts, tables })
+    // 1. Remove deleted elements from the XML DOM first
+    const xmlAfterDeletion = removeDeletedElements(slideXmlText, slide)
 
-    // 2. Process image replacements and update slide relationships (.rels)
+    // 2. Apply text and table edits using raw XML DOM transformer engine
+    let updatedXml = applyEditsToSlideXml(xmlAfterDeletion, { texts, tables })
+
+    // 3. Process image replacements and update slide relationships (.rels)
     const relsPath = getSlideRelsPath(zipKey)
     let relsFile = zip.file(relsPath)
     if (!relsFile) {
