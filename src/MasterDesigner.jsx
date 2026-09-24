@@ -456,6 +456,7 @@ export function MasterDesigner({
   onImportPresets,
   designerMode = 'design',
   setDesignerMode,
+  onDirtyChange,
 }) {
   const [firstSlideUrl, setFirstSlideUrl] = useState(customLayout?.firstSlideUrl || '')
   const [lastSlideUrl, setLastSlideUrl] = useState(customLayout?.lastSlideUrl || '')
@@ -530,6 +531,7 @@ export function MasterDesigner({
     setLastSlideUrl(lastRes.backgroundUrl || '')
 
     setIsSlideModalOpen(false)
+    onDirtyChange?.(true)
     alert(`✅ PPTX elements preserved & populated onto canvas!\n\n• Cover Slide: ${firstRes.placeholders.length} img, ${firstRes.textboxes.length} txt\n• Master Slide: ${masterRes.placeholders.length} img, ${masterRes.textboxes.length} txt\n• Outro Slide: ${lastRes.placeholders.length} img, ${lastRes.textboxes.length} txt\n\nYou can now edit, resize, style, or add more elements!`)
   }
 
@@ -551,6 +553,11 @@ export function MasterDesigner({
       }, 0)
     }
   }, [customLayout])
+
+  // Track dirty state — mark dirty ONLY on explicit user actions (see addPlaceholder,
+  // addTextbox, deleteElement, updateElement, handleFileChange, handleApplySlideRoles).
+  // We do NOT use a reactive useEffect here because customLayout changes (preset switches)
+  // also trigger state updates and would incorrectly mark unmodified tabs as dirty.
 
   // ── Active list helpers ──────────────────────────────────────────────────
   const getActiveList = useCallback(() => {
@@ -575,7 +582,10 @@ export function MasterDesigner({
     const file = e.target.files?.[0]
     if (!file) return
     const reader = new FileReader()
-    reader.onload = () => setter(reader.result)
+    reader.onload = () => {
+      setter(reader.result)
+      onDirtyChange?.(true)
+    }
     reader.readAsDataURL(file)
   }
 
@@ -594,6 +604,7 @@ export function MasterDesigner({
       borderRadius: 0,
     }])
     setSelectedId(id)
+    onDirtyChange?.(true)
   }
 
   const addTextbox = useCallback((overrides = {}) => {
@@ -616,13 +627,15 @@ export function MasterDesigner({
       ...overrides,
     }])
     setSelectedId(id)
-  }, [getActiveList, editSlideType, setActiveTextboxes])
+    onDirtyChange?.(true)
+  }, [getActiveList, editSlideType, setActiveTextboxes, onDirtyChange])
 
   const deleteElement = (id) => {
     const { placeholders: activeP, textboxes: activeT } = getActiveList()
     setActivePlaceholders(activeP.filter((p) => p.id !== id))
     setActiveTextboxes(activeT.filter((t) => t.id !== id))
     if (selectedId === id) setSelectedId(null)
+    onDirtyChange?.(true)
   }
 
   const getElement = useCallback((id) => {
@@ -634,7 +647,8 @@ export function MasterDesigner({
     const { placeholders: activeP, textboxes: activeT } = getActiveList()
     setActivePlaceholders(activeP.map((p) => (p.id === id ? { ...p, ...fields } : p)))
     setActiveTextboxes(activeT.map((t) => (t.id === id ? { ...t, ...fields } : t)))
-  }, [getActiveList, setActivePlaceholders, setActiveTextboxes])
+    onDirtyChange?.(true)
+  }, [getActiveList, setActivePlaceholders, setActiveTextboxes, onDirtyChange])
 
   const { placeholders: activePlaceholders, textboxes: activeTextboxes } = getActiveList()
   const selectedElement = getElement(selectedId)
@@ -1051,15 +1065,24 @@ export function MasterDesigner({
                   {!extractMode && (
                     <div
                       style={{
-                        position: 'absolute', right: 0, bottom: 0,
-                        width: '14px', height: '14px',
-                        backgroundColor: isSelected ? '#0b7a38' : '#666',
-                        borderRadius: '50%', cursor: 'se-resize',
-                        transform: 'translate(4px, 4px)', border: '2px solid #fff',
+                        position: 'absolute', right: 2, bottom: 2,
+                        width: '18px', height: '18px',
+                        backgroundColor: isSelected ? '#0b7a38' : '#888',
+                        borderRadius: '4px', cursor: 'se-resize',
+                        border: '2px solid #fff',
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.35)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        zIndex: 20,
                       }}
                       onMouseDown={(e) => handleMouseDown(e, p.id, 'resize')}
                       onClick={(e) => e.stopPropagation()}
-                    />
+                      title="Drag to resize"
+                    >
+                      <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                        <path d="M1 7L7 7L7 1" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                        <path d="M4 7L7 7L7 4" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                      </svg>
+                    </div>
                   )}
                 </div>
               )
@@ -1126,15 +1149,24 @@ export function MasterDesigner({
                   {!extractMode && (
                     <div
                       style={{
-                        position: 'absolute', right: 0, bottom: 0,
-                        width: '14px', height: '14px',
+                        position: 'absolute', right: 2, bottom: 2,
+                        width: '18px', height: '18px',
                         backgroundColor: isSelected ? '#0b7a38' : isExtracted ? '#7c3aed' : '#e12b2b',
-                        borderRadius: '50%', cursor: 'se-resize',
-                        transform: 'translate(4px, 4px)', border: '2px solid #fff',
+                        borderRadius: '4px', cursor: 'se-resize',
+                        border: '2px solid #fff',
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.35)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        zIndex: 20,
                       }}
                       onMouseDown={(e) => handleMouseDown(e, t.id, 'resize')}
                       onClick={(e) => e.stopPropagation()}
-                    />
+                      title="Drag to resize"
+                    >
+                      <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                        <path d="M1 7L7 7L7 1" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                        <path d="M4 7L7 7L7 4" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                      </svg>
+                    </div>
                   )}
                 </div>
               )

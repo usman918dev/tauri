@@ -1,8 +1,140 @@
+import { useRef, useCallback, useEffect } from 'react'
+
 const FONT_FACES = [
   'Calibri', 'Arial', 'Arial Narrow', 'Times New Roman', 'Georgia',
   'Verdana', 'Tahoma', 'Trebuchet MS', 'Comic Sans MS', 'Segoe UI',
   'Helvetica', 'Garamond', 'Palatino', 'Book Antiqua',
 ]
+
+// ─── Drag / Resize Hook ────────────────────────────────────────────────────────
+// Returns handlers to attach to each canvas element.
+// canvasRef: ref to the 16:9 canvas div (used for %-coordinate math)
+// updateElement: (id, { xPct, yPct, wPct, hPct }) => void
+function useDragResize(canvasRef, updateElement) {
+  const stateRef = useRef(null) // { id, mode:'move'|'resize', startX, startY, origX, origY, origW, origH }
+
+  const onMouseMove = useCallback((e) => {
+    const s = stateRef.current
+    if (!s || !canvasRef.current) return
+    const rect = canvasRef.current.getBoundingClientRect()
+    const dx = ((e.clientX - s.startX) / rect.width) * 100
+    const dy = ((e.clientY - s.startY) / rect.height) * 100
+
+    if (s.mode === 'move') {
+      let newX = s.origX + dx
+      let newY = s.origY + dy
+      // Clamp so element stays inside canvas
+      newX = Math.max(0, Math.min(100 - s.origW, newX))
+      newY = Math.max(0, Math.min(100 - s.origH, newY))
+      updateElement(s.id, {
+        xPct: parseFloat(newX.toFixed(2)),
+        yPct: parseFloat(newY.toFixed(2)),
+      })
+    } else {
+      // resize
+      let newW = Math.max(5, Math.min(100 - s.origX, s.origW + dx))
+      let newH = Math.max(5, Math.min(100 - s.origY, s.origH + dy))
+      updateElement(s.id, {
+        wPct: parseFloat(newW.toFixed(2)),
+        hPct: parseFloat(newH.toFixed(2)),
+      })
+    }
+  }, [canvasRef, updateElement])
+
+  const onMouseUp = useCallback(() => {
+    stateRef.current = null
+    window.removeEventListener('mousemove', onMouseMove)
+    window.removeEventListener('mouseup', onMouseUp)
+  }, [onMouseMove])
+
+  const startDrag = useCallback((e, elem, mode) => {
+    e.stopPropagation()
+    e.preventDefault()
+    stateRef.current = {
+      id: elem.id,
+      mode,
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: elem.xPct || 0,
+      origY: elem.yPct || 0,
+      origW: elem.wPct || 20,
+      origH: elem.hPct || 20,
+    }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }, [onMouseMove, onMouseUp])
+
+  return { startDrag }
+}
+
+// ─── Resize Handle ─────────────────────────────────────────────────────────────
+function ResizeHandle({ elem, startDrag, color = '#7c3aed' }) {
+  return (
+    <div
+      onMouseDown={(e) => startDrag(e, elem, 'resize')}
+      onClick={(e) => e.stopPropagation()}
+      title="Drag to resize"
+      style={{
+        position: 'absolute',
+        right: 3,
+        bottom: 3,
+        width: 20,
+        height: 20,
+        borderRadius: 4,
+        background: color,
+        border: '2px solid #fff',
+        cursor: 'se-resize',
+        boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 30,
+        flexShrink: 0,
+      }}
+    >
+      <svg width="9" height="9" viewBox="0 0 9 9" fill="none">
+        <path d="M1 8L8 8L8 1" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+        <path d="M4.5 8L8 8L8 4.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+      </svg>
+    </div>
+  )
+}
+
+// ─── Move Handle ───────────────────────────────────────────────────────────────
+function MoveHandle({ elem, startDrag }) {
+  return (
+    <div
+      onMouseDown={(e) => startDrag(e, elem, 'move')}
+      onClick={(e) => e.stopPropagation()}
+      title="Drag to move"
+      style={{
+        position: 'absolute',
+        top: 3,
+        left: 3,
+        width: 20,
+        height: 20,
+        borderRadius: 4,
+        background: 'rgba(15,23,42,0.55)',
+        border: '2px solid rgba(255,255,255,0.7)',
+        cursor: 'grab',
+        boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 30,
+        flexShrink: 0,
+        opacity: 0,
+        transition: 'opacity 0.15s ease',
+      }}
+      className="move-handle"
+    >
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+        <path d="M5 1V9M1 5H9" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+        <path d="M3 3L5 1L7 3M3 7L5 9L7 7M3 3L1 5L3 7M7 3L9 5L7 7" stroke="white" strokeWidth="1" strokeLinecap="round"/>
+      </svg>
+    </div>
+  )
+}
 
 export function QuickEditView({
   parsedData,
@@ -26,6 +158,9 @@ export function QuickEditView({
 }) {
   const activeSlide = parsedData?.slides?.[activeSlideIndex]
   const selectedElem = activeSlide?.elements?.find((e) => e.id === selectedElementId)
+  const canvasRef = useRef(null)
+
+  const { startDrag } = useDragResize(canvasRef, updateElement)
 
   return (
     <div className="pptx-workbench">
@@ -126,13 +261,14 @@ export function QuickEditView({
             <span>{activeSlide?.title}</span>
           </div>
           <span className="pptx-stage__hint">
-            💡 Double-click text to edit • Drag &amp; drop images onto slots to replace
+            💡 Click to select • <strong>Drag</strong> to move • <strong>↘ corner</strong> to resize • Drop images onto slots
           </span>
         </div>
 
         <div className="pptx-stage__viewport">
           {activeSlide ? (
             <div
+              ref={canvasRef}
               className="pptx-canvas"
               style={{
                 backgroundImage: activeSlide.backgroundDataUrl ? `url(${activeSlide.backgroundDataUrl})` : undefined,
@@ -159,12 +295,18 @@ export function QuickEditView({
                         fontWeight: elem.bold ? 'bold' : 'normal',
                         fontStyle: elem.italic ? 'italic' : 'normal',
                         textAlign: elem.align || 'left',
+                        cursor: 'default',
                       }}
                       onClick={(e) => {
                         e.stopPropagation()
                         setSelectedElementId(elem.id)
                       }}
                     >
+                      {/* Move handle - top-left, visible on hover/select */}
+                      {isSelected && (
+                        <MoveHandle elem={elem} startDrag={startDrag} />
+                      )}
+
                       <textarea
                         className="pptx-canvas__text-input"
                         value={elem.text || ''}
@@ -181,6 +323,11 @@ export function QuickEditView({
                           wordBreak: 'break-word',
                         }}
                       />
+
+                      {/* Resize handle - bottom-right */}
+                      {isSelected && (
+                        <ResizeHandle elem={elem} startDrag={startDrag} color="#2563eb" />
+                      )}
                     </div>
                   )
                 }
@@ -195,6 +342,7 @@ export function QuickEditView({
                         top: `${elem.yPct}%`,
                         width: `${elem.wPct}%`,
                         height: `${elem.hPct}%`,
+                        cursor: 'default',
                       }}
                       onClick={(e) => {
                         e.stopPropagation()
@@ -203,14 +351,17 @@ export function QuickEditView({
                       onDragOver={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
-                        if (e.dataTransfer) {
-                          e.dataTransfer.dropEffect = 'copy'
-                        }
+                        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
                         setDragOverElemId(elem.id)
                       }}
                       onDragLeave={() => setDragOverElemId(null)}
                       onDrop={(e) => handleElementImageDrop(e, elem.id)}
                     >
+                      {/* Move handle - top-left, visible on select */}
+                      {isSelected && (
+                        <MoveHandle elem={elem} startDrag={startDrag} />
+                      )}
+
                       {elem.dataUrl ? (
                         <img src={elem.dataUrl} alt="Slide Asset" className="pptx-canvas__img-asset" />
                       ) : (
@@ -223,6 +374,7 @@ export function QuickEditView({
                       <button
                         type="button"
                         className="pptx-canvas__img-btn"
+                        onMouseDown={(e) => e.stopPropagation()}
                         onClick={(e) => {
                           e.stopPropagation()
                           triggerImageReplacement(elem.id)
@@ -231,6 +383,11 @@ export function QuickEditView({
                       >
                         📷 Replace
                       </button>
+
+                      {/* Resize handle - bottom-right */}
+                      {isSelected && (
+                        <ResizeHandle elem={elem} startDrag={startDrag} color="#7c3aed" />
+                      )}
                     </div>
                   )
                 }
@@ -251,6 +408,9 @@ export function QuickEditView({
                         setSelectedElementId(elem.id)
                       }}
                     >
+                      {isSelected && (
+                        <MoveHandle elem={elem} startDrag={startDrag} />
+                      )}
                       <table className="pptx-canvas__tbl-grid">
                         <tbody>
                           {(elem.rows || []).map((row, rIdx) => (
@@ -290,6 +450,9 @@ export function QuickEditView({
                           ))}
                         </tbody>
                       </table>
+                      {isSelected && (
+                        <ResizeHandle elem={elem} startDrag={startDrag} color="#d97706" />
+                      )}
                     </div>
                   )
                 }
@@ -598,7 +761,7 @@ export function QuickEditView({
                     <div>
                       <div>Add Image Slot</div>
                       <div style={{ fontSize: '11px', fontWeight: 400, color: '#7c3aed', marginTop: '1px' }}>
-                        Image placeholder with drag &amp; drop
+                        Drag &amp; drop • resize &amp; move
                       </div>
                     </div>
                   </button>
@@ -608,6 +771,16 @@ export function QuickEditView({
           </div>
         )}
       </aside>
+
+      {/* Global CSS for move handle show-on-select */}
+      <style>{`
+        .pptx-canvas__elem.is-selected .move-handle {
+          opacity: 1 !important;
+        }
+        .pptx-canvas__elem.is-selected .move-handle:active {
+          cursor: grabbing !important;
+        }
+      `}</style>
     </div>
   )
 }

@@ -384,6 +384,12 @@
   cursor: pointer;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   user-select: none;
+  overflow: visible;
+}
+
+.pptx-canvas__elem.is-selected {
+  cursor: default;
+  overflow: visible;
 }
 
 /* 1. Text Overlay Element */
@@ -432,6 +438,10 @@
   border-radius: 4px;
   overflow: hidden;
   background: rgba(147, 51, 234, 0.04);
+}
+
+.pptx-canvas__img.is-selected {
+  overflow: visible;
 }
 
 .pptx-canvas__img:hover {
@@ -496,6 +506,10 @@
   overflow: hidden;
 }
 
+.pptx-canvas__table.is-selected {
+  overflow: visible;
+}
+
 .pptx-canvas__table:hover {
   border-color: #d97706;
 }
@@ -535,6 +549,21 @@
   color: #64748b;
   font-size: 14px;
   font-weight: 500;
+}
+
+.pptx-inspector__empty-state {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Move handle: show on hover of selected element too */
+.pptx-canvas__elem:hover .move-handle {
+  opacity: 0.7 !important;
+}
+.pptx-canvas__elem.is-selected .move-handle {
+  opacity: 1 !important;
 }
 
 /* ── Right Inspector Panel ── */

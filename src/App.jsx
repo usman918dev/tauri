@@ -121,6 +121,54 @@ function App({ data }) {
     }
   }, [])
 
+  // ── Unsaved-changes close guards ──────────────────────────────────────────
+  // Use a ref so event listeners always read the latest tabs without re-registering.
+  const tabsRef = useRef(tabs)
+  useEffect(() => { tabsRef.current = tabs }, [tabs])
+
+  // Browser tab / window refresh guard (web)
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      const hasDirty = tabsRef.current.some(t => t.isDirty)
+      if (hasDirty) {
+        e.preventDefault()
+        e.returnValue = 'You have unsaved changes. Are you sure you want to leave?'
+        return e.returnValue
+      }
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [])
+
+  // Tauri native window X-button close guard
+  useEffect(() => {
+    let unlisten = null
+    const setupTauriCloseGuard = async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window')
+        const win = getCurrentWindow()
+        unlisten = await win.onCloseRequested(async (event) => {
+          const dirtyTabs = tabsRef.current.filter(t => t.isDirty)
+          if (dirtyTabs.length > 0) {
+            event.preventDefault()
+            const names = dirtyTabs.map(t => `• ${t.title || t.filename || 'Untitled'}`).join('\n')
+            const shouldClose = window.confirm(
+              `You have unsaved changes in ${dirtyTabs.length} tab${dirtyTabs.length > 1 ? 's' : ''}:\n${names}\n\nClose anyway? All unsaved changes will be lost.`
+            )
+            if (shouldClose) {
+              await win.destroy()
+            }
+          }
+        })
+      } catch {
+        // Not in Tauri environment, ignore
+      }
+    }
+    setupTauriCloseGuard()
+    return () => { unlisten?.() }
+  }, [])
+
+
   useEffect(() => {
     const hydrate = async () => {
       try {
@@ -263,6 +311,13 @@ function App({ data }) {
 
   const closeTab = (id) => {
     if (id === 'home') return
+    const tabToClose = tabs.find(t => t.id === id)
+    if (tabToClose?.isDirty) {
+      const shouldClose = window.confirm(
+        `"${tabToClose.title || 'This tab'}" has unsaved changes.\n\nClose anyway? All unsaved changes will be lost.`
+      )
+      if (!shouldClose) return
+    }
     setTabs(prev => {
       const next = prev.filter(t => t.id !== id)
       if (activeTabId === id) {
@@ -822,6 +877,8 @@ function App({ data }) {
   }, [moveMenuIndex])
 
   const updatePair = (index, key, value) => {
+    // Mark the active tab dirty whenever the user fills in any content
+    setTabDirty(activeTabId, true)
     setPairs((prev) => {
       const next = prev.map((pair, pairIndex) =>
         pairIndex === index ? { ...pair, [key]: value } : pair,
@@ -1359,6 +1416,8 @@ function App({ data }) {
       }
     } finally {
       setIsGenerating(false)
+      // Clear dirty state for this tab after a successful save
+      setTabDirty(activeTabId, false)
     }
   }
 
@@ -1382,6 +1441,8 @@ function App({ data }) {
       } else {
         triggerBlobDownload(blob, fileName)
       }
+      // After successful download, clear dirty state for this tab
+      setTabDirty(activeTabId, false)
     } finally {
       setIsGenerating(false)
     }
@@ -1522,18 +1583,14 @@ function App({ data }) {
   const handleClose = async () => {
     if (isTauriEnv()) {
       try {
-        // Check for any document tabs with unsaved changes
-        const dirtyTabs = tabs.filter(t => t.type === 'document' && t.isDirty)
+        // Check ALL tab types for unsaved changes
+        const dirtyTabs = tabs.filter(t => t.isDirty)
         if (dirtyTabs.length > 0) {
           const fileNames = dirtyTabs.map(t => `• ${t.title || t.filename || 'Untitled'}`).join('\n')
-          const choice = window.confirm(
-            `You have unsaved changes in ${dirtyTabs.length} file${dirtyTabs.length > 1 ? 's' : ''}:\n${fileNames}\n\nSave before closing? (Click OK to close anyway without saving)`
+          const shouldClose = window.confirm(
+            `You have unsaved changes in ${dirtyTabs.length} tab${dirtyTabs.length > 1 ? 's' : ''}:\n${fileNames}\n\nClose anyway? All unsaved changes will be lost.`
           )
-          if (!choice) {
-            // User clicked Cancel — abort close
-            return
-          }
-          // User clicked OK — close without saving
+          if (!shouldClose) return  // User clicked Cancel — abort close
         }
         await getCurrentWindow().close()
       } catch (err) {
@@ -1645,8 +1702,8 @@ function App({ data }) {
             }}
           >
             {t.type === 'home' ? '🏠' : null}
-            {/* 🟢 Unsaved-changes indicator — shown for dirty document tabs */}
-            {t.isDirty && t.type === 'document' && (
+            {/* 🟢 Unsaved-changes indicator — shown for ALL dirty tabs */}
+            {t.isDirty && (
               <span
                 title="Unsaved changes"
                 style={{
@@ -1790,7 +1847,9 @@ function App({ data }) {
                       customLayout={customLayout}
                       designerMode={effectiveDesignerMode}
                       setDesignerMode={setEffectiveDesignerMode}
+                      onDirtyChange={(dirty) => setTabDirty(activeTabId, dirty)}
                       onSave={async (layout) => {
+                        setTabDirty(activeTabId, false)
                         if (effectivePresetId) {
                           const updated = masterPresets.map((p) =>
                             p.id === effectivePresetId ? { ...p, layout } : p,
@@ -1805,7 +1864,10 @@ function App({ data }) {
                       }}
                       presets={masterPresets}
                       activePresetId={effectivePresetId}
-                      onSavePreset={handleSaveNewPreset}
+                      onSavePreset={(name, layout) => {
+                        setTabDirty(activeTabId, false)
+                        handleSaveNewPreset(name, layout)
+                      }}
                       onLoadPreset={handleLoadPreset}
                       onDeletePreset={handleDeletePreset}
                       onRenamePreset={handleRenamePreset}
