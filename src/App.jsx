@@ -123,6 +123,7 @@ function App({ data }) {
 
   // ── Unsaved-changes close guards ──────────────────────────────────────────
   // Use a ref so event listeners always read the latest tabs without re-registering.
+  const isClosingRef = useRef(false)
   const tabsRef = useRef(tabs)
   useEffect(() => { tabsRef.current = tabs }, [tabs])
 
@@ -142,12 +143,14 @@ function App({ data }) {
 
   // Tauri native window X-button close guard
   useEffect(() => {
-    let unlisten = null
+    let unlistenFn = null
+    let mounted = true
     const setupTauriCloseGuard = async () => {
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window')
         const win = getCurrentWindow()
-        unlisten = await win.onCloseRequested(async (event) => {
+        const unlisten = await win.onCloseRequested(async (event) => {
+          if (isClosingRef.current) return
           const dirtyTabs = tabsRef.current.filter(t => t.isDirty)
           if (dirtyTabs.length > 0) {
             event.preventDefault()
@@ -156,16 +159,29 @@ function App({ data }) {
               `You have unsaved changes in ${dirtyTabs.length} tab${dirtyTabs.length > 1 ? 's' : ''}:\n${names}\n\nClose anyway? All unsaved changes will be lost.`
             )
             if (shouldClose) {
-              await win.destroy()
+              isClosingRef.current = true
+              try {
+                await win.destroy()
+              } catch {
+                await win.close()
+              }
             }
           }
         })
-      } catch {
-        // Not in Tauri environment, ignore
+        if (mounted) {
+          unlistenFn = unlisten
+        } else {
+          unlisten()
+        }
+      } catch (err) {
+        console.warn('Tauri close guard warning:', err)
       }
     }
     setupTauriCloseGuard()
-    return () => { unlisten?.() }
+    return () => {
+      mounted = false
+      if (typeof unlistenFn === 'function') unlistenFn()
+    }
   }, [])
 
 
@@ -748,6 +764,8 @@ function App({ data }) {
   const pendingScrollIndex = useRef(null)
   const moveMenuRef = useRef(null)
   const hydrationRef = useRef({ key: null, skipSave: false })
+  const hydratedKeyRef = useRef(null)
+  const tabDataCacheRef = useRef({})
 
   useEffect(() => {
     if (
@@ -772,10 +790,29 @@ function App({ data }) {
     }
   }, [currentRoute])
 
-  // --- FIXED USEEFFECT ---
+  // --- TAB ISOLATED HYDRATION USEEFFECT ---
   useEffect(() => {
-    setTimeout(() => setIsHydrated(false), 0)
     let cancelled = false
+
+    // Check if we have cached tab data in memory for instant tab switching
+    const cached = tabDataCacheRef.current[storageKey]
+    if (cached) {
+      setPairs(cached.pairs || [])
+      setImportedFirstSlide(cached.importedFirstSlide || null)
+      importedFirstSlideRef.current = cached.importedFirstSlide || null
+      setImportedLastSlide(cached.importedLastSlide || null)
+      importedLastSlideRef.current = cached.importedLastSlide || null
+      setUseTemplateFirst(!!cached.useTemplateFirst)
+      setUseTemplateLast(!!cached.useTemplateLast)
+      hydratedKeyRef.current = storageKey
+      hydrationRef.current = { key: storageKey, skipSave: true }
+      setIsHydrated(true)
+      return
+    }
+
+    setIsHydrated(false)
+    hydratedKeyRef.current = null
+
     const hydrate = async () => {
       const storedPairs = await loadStoredPairs(storageKey)
       const storedFirst = await loadPairsFromDb(`${storageKey}:imported-first`)
@@ -792,7 +829,8 @@ function App({ data }) {
       if (cancelled) {
         return
       }
-      setPairs(normalizePairs(source, { slotKeys, requiresText, textDefault }))
+      const loadedPairs = normalizePairs(source, { slotKeys, requiresText, textDefault })
+      setPairs(loadedPairs)
 
       if (storedFirst) {
         setImportedFirstSlide(storedFirst)
@@ -818,6 +856,15 @@ function App({ data }) {
         setUseTemplateLast(false)
       }
 
+      tabDataCacheRef.current[storageKey] = {
+        pairs: loadedPairs,
+        importedFirstSlide: storedFirst || null,
+        importedLastSlide: storedLast || null,
+        useTemplateFirst: !!storedConfig?.useTemplateFirst,
+        useTemplateLast: !!storedConfig?.useTemplateLast,
+      }
+
+      hydratedKeyRef.current = storageKey
       hydrationRef.current = { key: storageKey, skipSave: true }
       setIsHydrated(true)
     }
@@ -829,7 +876,7 @@ function App({ data }) {
   }, [storageKey, data, template, slotKeys, requiresText, textDefault])
 
   useEffect(() => {
-    if (!isHydrated) {
+    if (!isHydrated || hydratedKeyRef.current !== storageKey) {
       return
     }
     if (
@@ -839,13 +886,21 @@ function App({ data }) {
       hydrationRef.current.skipSave = false
       return
     }
+    tabDataCacheRef.current[storageKey] = {
+      ...tabDataCacheRef.current[storageKey],
+      pairs,
+      importedFirstSlide,
+      importedLastSlide,
+      useTemplateFirst,
+      useTemplateLast,
+    }
     savePairsToStorage(storageKey, pairs, {
       slotKeys,
       requiresText,
       hasPairContent,
       trimTrailingEmptyPairs,
     })
-  }, [pairs, storageKey, slotKeys, requiresText, isHydrated])
+  }, [pairs, storageKey, slotKeys, requiresText, isHydrated, importedFirstSlide, importedLastSlide, useTemplateFirst, useTemplateLast])
 
   useEffect(() => {
     const index = pendingScrollIndex.current
@@ -1223,6 +1278,7 @@ function App({ data }) {
       if (canUseStorage()) {
         window.localStorage.removeItem(storageKey)
       }
+      delete tabDataCacheRef.current[storageKey]
       await removePairsFromDb(storageKey)
       await removePairsFromDb(`${storageKey}:imported-first`)
       await removePairsFromDb(`${storageKey}:imported-last`)
@@ -1592,7 +1648,12 @@ function App({ data }) {
           )
           if (!shouldClose) return  // User clicked Cancel — abort close
         }
-        await getCurrentWindow().close()
+        isClosingRef.current = true
+        try {
+          await getCurrentWindow().destroy()
+        } catch {
+          await getCurrentWindow().close()
+        }
       } catch (err) {
         console.error('Failed to close window:', err)
       }
@@ -1736,7 +1797,7 @@ function App({ data }) {
       </div>
       <div style={{ flex: 1, overflowY: 'auto', position: 'relative', background: 'var(--background)' }}>
         {tabs.map(tab => (
-          <div key={tab.id} style={{ display: tab.id === activeTabId ? 'block' : 'none', height: '100%' }}>
+          <div key={tab.id} id={`tab-content-${tab.id}`} style={{ display: tab.id === activeTabId ? 'block' : 'none', height: '100%' }}>
             {tab.type === 'home' ? (
               <HomeTab onOpenTool={openToolTab} masterPresets={masterPresets} />
             ) : tab.type === 'document' ? (
@@ -1753,9 +1814,10 @@ function App({ data }) {
                   onDirtyChange={(dirty) => setTabDirty(tab.id, dirty)}
                 />
               </Suspense>
-            ) : (
-              // THIS IS THE MAIN TOOL RENDER BLOCK THAT GOT SWALLOWED
+            ) : tab.id === activeTabId ? (
+              // THIS IS THE MAIN TOOL RENDER BLOCK FOR ACTIVE TAB
               <main
+                key={`main-${tab.id}`}
                 className={`app${currentRoute === ROUTES.compliance ? ' app--compliance' : ''}${currentRoute === ROUTES.desilting ? ' app--desilting' : ''
                   }${currentRoute === ROUTES.dailyPlot ? ' app--daily-plot' : ''}`}
               >
@@ -2134,7 +2196,7 @@ function App({ data }) {
                 )}
 
               </main>
-            )}
+            ) : null}
           </div>
         ))}
       </div>
